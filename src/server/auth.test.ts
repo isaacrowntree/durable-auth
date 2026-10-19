@@ -406,23 +406,61 @@ describe("step-up before sensitive actions", () => {
     expect((await call("passkey-options", { body: {}, cookie })).status).toBe(403);
   });
 
-  // Just recovered by email, with every passkey revoked: the session is the
-  // only way back to a passkey, so it mustn't be asked for one.
-  it("lets an account with no passkey add one, however long ago it signed in", async () => {
-    await call("register-options", { body: { name: "Isaac" } });
+  // Just recovered by email, with every passkey revoked: the recovery
+  // session has the step-up window to add one — and a cookie stolen later
+  // can't use the empty account to plant its own.
+  it("lets a just-recovered account add a passkey, but not a stale one", async () => {
     const { cookie } = await signUp();
     await call("email-start", { body: { email: "i@example.com" }, cookie });
     await call("email-verify", { body: { email: "i@example.com", code: sent.pop()!.code }, cookie });
     await call("recover-start", { body: { email: "i@example.com" } });
     const recovered = await call("recover-verify", { body: { email: "i@example.com", code: sent.pop()!.code } });
+    expect((await call("passkey-options", { body: {}, cookie: recovered.cookie })).status).toBe(200);
+
     stale();
-    const options_ = await call("passkey-options", { body: {}, cookie: recovered.cookie });
-    expect(options_.status).toBe(200);
-    // And step-up says why it can't help yet.
+    expect((await call("passkey-options", { body: {}, cookie: recovered.cookie })).status).toBe(403);
     expect(await call("reauth-options", { body: {}, cookie: recovered.cookie })).toMatchObject({
       status: 409,
       body: { needsPasskey: true },
     });
+  });
+});
+
+describe("telling who has an account", () => {
+  // Adding someone else's email must look exactly like adding a free one —
+  // down to when the hourly cap kicks in.
+  it("can't be done by asking to add an email that's taken", async () => {
+    const owner = await signUp("Owner", "key-o");
+    await call("email-start", { body: { email: "taken@example.com" }, cookie: owner.cookie });
+    await call("email-verify", { body: { email: "taken@example.com", code: sent.pop()!.code }, cookie: owner.cookie });
+    t += 61 * MINUTE; // a fresh hour for the cap
+    const prober = await signUp("Prober", "key-p");
+    const statuses = async (email: string) => {
+      const out = [];
+      for (let i = 0; i < 6; i++) out.push((await call("email-start", { body: { email }, cookie: prober.cookie })).status);
+      return out;
+    };
+    expect(await statuses("taken@example.com")).toEqual(await statuses("free@example.com"));
+  });
+});
+
+describe("sign-up", () => {
+  // allowSignup and Turnstile approved a name; the verify step can't swap it.
+  it("keeps the name it was approved under", async () => {
+    options.allowSignup = (_req, { name }) => name === "Invited";
+    rebuild();
+    const options_ = await call("register-options", { body: { name: "Invited" } });
+    const res = await call("register-verify", {
+      body: { name: "Somebody else", profile: PROFILE, response: passkeyResponse("k", options_.body.challenge) },
+    });
+    expect(res.body.account.name).toBe("Invited");
+  });
+
+  it("hands allowSignup the request's body, for an invite code", async () => {
+    options.allowSignup = (_req, { body }) => body.invite === "let-me-in";
+    rebuild();
+    expect((await call("register-options", { body: { name: "A" } })).status).toBe(403);
+    expect((await call("register-options", { body: { name: "A", invite: "let-me-in" } })).status).toBe(200);
   });
 });
 
@@ -495,6 +533,21 @@ describe("routing and origins", () => {
     rebuild();
     expect((await call("login-options", { body: {}, origin: "https://admin.app.test" })).status).toBe(200);
     expect((await call("login-options", { body: {}, origin: "https://evil.test" })).status).toBe(403);
+  });
+
+  it("refuses a post with no Origin unless fetch metadata says same-origin", async () => {
+    const post = (headers: Record<string, string>) =>
+      auth.handle(new Request(`${ORIGIN}/api/auth/login-options`, { method: "POST", headers, body: "{}" }));
+    expect((await post({}))!.status).toBe(403);
+    expect((await post({ "sec-fetch-site": "cross-site" }))!.status).toBe(403);
+    expect((await post({ "sec-fetch-site": "same-origin" }))!.status).toBe(200);
+  });
+
+  it("keeps __Host- and Secure on a plain-http host that isn't this machine", async () => {
+    const res = (await auth.handle(
+      new Request("http://app.test/api/auth/logout", { method: "POST", headers: { origin: "http://app.test" } }),
+    ))!;
+    expect(res.headers.get("set-cookie")).toMatch(/^__Host-session=; .*; Secure$/);
   });
 
   it("drops __Host- and Secure over plain http (localhost)", async () => {

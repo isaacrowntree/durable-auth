@@ -43,9 +43,9 @@ which is the one part nobody should write themselves.
 |---|---|
 | **Passkeys** | discoverable (no username), user verification required, single-use challenges bound to their purpose and account |
 | **Sessions** | 256-bit tokens in an `HttpOnly`, `SameSite=Lax`, `__Host-` cookie; only a SHA-256 hash is stored; sliding one-year expiry |
-| **Step-up** | deleting the account, changing the recovery email, and adding or removing a passkey need a passkey used in the last 5 minutes. The client asks for it and retries on its own |
-| **Recovery** | six-digit codes by email, 10-minute expiry, 5 guesses a code, 5 codes an hour and 10 wrong guesses a day per email. Recovering signs every device out and revokes every passkey |
-| **No enumeration** | "is this email registered?" can't be learned from recovery or from adding an email: the answers and timing are the same either way |
+| **Step-up** | deleting the account, changing the recovery email, and adding or removing a passkey need a passkey (or, just after recovery, the emailed code) used in the last 5 minutes. The client asks for it and retries on its own |
+| **Recovery** | six-digit codes by email, 10-minute expiry, 5 guesses a code, 5 codes an hour and 10 wrong guesses a day per email, 1,000 wrong guesses a day in all. Recovering signs every device out and revokes every passkey |
+| **No enumeration** | "is this email registered?" can't be learned from recovery or from adding an email: the answers, the rate limits and (with `waitUntil`) the timing are the same either way |
 | **Also** | passkey list and remove, sign out other devices, a sign-up hook, per-IP rate limits, Turnstile, a daily sweep of expired rows |
 
 ## Server
@@ -151,7 +151,7 @@ All JSON. POSTs must come from an allowed origin.
 | | `POST login-options` → `login-verify` | sign in |
 | | `POST reauth-options` → `reauth-verify` | step-up |
 | | `GET passkeys` | the account's passkeys, without key material |
-| 🔒 | `POST passkey-options` → `passkey-verify` | add a passkey (no step-up needed when the account has none) |
+| 🔒 | `POST passkey-options` → `passkey-verify` | add a passkey |
 | 🔒 | `POST passkey-delete` | remove one, never the last |
 | | `POST recover-start` → `recover-verify` | recovery by email |
 | 🔒 | `POST email-start` → `email-verify` | set the recovery email |
@@ -175,12 +175,14 @@ What it defends against, and how:
   email, or adding its own passkey.
 - **A stolen phone.** Recover by email on another device. Every session is signed out and
   every passkey revoked, including the one on the stolen phone.
-- **Guessing codes.** Five guesses a code and ten a day per email, so a six-digit code
-  survives a determined attacker. Codes are rejection-sampled and uniform.
+- **Guessing codes.** Five guesses a code, ten a day per email and a thousand a
+  day across every email: about one chance in a thousand a day of any account
+  falling to guessing, at the attacker's full effort. Codes are
+  rejection-sampled and uniform.
 - **Learning who has an account.** Recovery and email verification answer the
   same way, at the same speed, whether or not the email is registered.
-- **CSRF.** `SameSite=Lax` keeps the cookie off cross-site POSTs, and the
-  origin check refuses them anyway.
+- **CSRF.** `SameSite=Lax` keeps the cookie off cross-site POSTs, and every
+  POST must carry an allowed `Origin` (or `Sec-Fetch-Site: same-origin`).
 - **Bots signing up.** Per-IP rate limits, optional Turnstile, and `allowSignup`.
 
 What it doesn't do:
@@ -192,6 +194,14 @@ What it doesn't do:
 - **The email account is the recovery factor.** Whoever controls the inbox can
   recover the account. Leave `sendCode` out, and recovery means a second passkey on
   another device (or a synced one).
+- **Recovery can be paused by a stranger.** The guess caps that make codes
+  safe can be spent by someone else: ten wrong guesses lock one email's
+  recovery for a day, and a flood of them locks everyone's. Rate limits and
+  Turnstile keep that expensive; it's the trade for codes that can't be
+  brute-forced.
+- **The profile is the user's to write.** Anything a user mustn't set on
+  themselves — a plan, a role — belongs in your own storage, or gets refused
+  in `parseProfile`.
 - **One Durable Object serves every account.** Sign-in is rare, but
   `auth.session(req)` is a round trip to it. That's plenty for thousands of
   active users. Past that, cache the session in your Worker for a few seconds.

@@ -24,11 +24,16 @@ const METHODS = new Set(
 
 export class AuthDurableObject<Env = unknown> extends DurableObject<Env> {
   private store = new AuthStore(this.ctx.storage.sql);
+  /** Checked once per instance, not per call: every session check comes here. */
+  private sweepScheduled = false;
 
   async run(method: string, args: unknown[]): Promise<unknown> {
     if (!METHODS.has(method)) throw new Error(`Unknown auth method: ${method}`);
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + SWEEP_EVERY_MS);
+    if (!this.sweepScheduled) {
+      if ((await this.ctx.storage.getAlarm()) === null) {
+        await this.ctx.storage.setAlarm(Date.now() + SWEEP_EVERY_MS);
+      }
+      this.sweepScheduled = true;
     }
     const fn = (this.store as unknown as Record<string, (...a: unknown[]) => unknown>)[method]!;
     return fn.apply(this.store, args);

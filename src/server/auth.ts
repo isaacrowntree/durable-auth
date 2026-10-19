@@ -48,12 +48,15 @@ export interface AuthOptions<P extends Profile = Profile> {
    * request's own origin. */
   origins?: string[];
   /** Validate the app's account data, on sign-up (`current` null) and on
-   * every update (`input` is the current profile with the patch merged in).
-   * Throw `new AuthInputError(message)` to refuse it. Default: any JSON
-   * object up to 4 KB. */
-  parseProfile?: (input: unknown, current: P | null) => P;
-  /** Who may create an account. Default: anyone. Return false to refuse. */
-  allowSignup?: (req: Request, attempt: { name: string }) => boolean | Promise<boolean>;
+   * every update (`input` is the current profile with `patch`, what the
+   * client sent, merged in). The user can write any of it: keep anything
+   * they mustn't set themselves (a plan, a role) out of the profile, or
+   * refuse it here. Throw `new AuthInputError(message)` to refuse. Default:
+   * any JSON object up to 4 KB. */
+  parseProfile?: (input: unknown, current: P | null, patch: unknown) => P;
+  /** Who may create an account. Default: anyone. Return false to refuse.
+   * `body` is the request's JSON — e.g. an invite code your page sent. */
+  allowSignup?: (req: Request, attempt: { name: string; body: Record<string, unknown> }) => boolean | Promise<boolean>;
   /** Send a one-time code. Absent: recovery by email is off, and `config`
    * says so. See `cloudflareEmail` for Cloudflare Email Sending. */
   sendCode?: (to: string, code: string, purpose: CodePurpose) => Promise<void>;
@@ -125,7 +128,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
   const now = options.now ?? Date.now;
   const reauthWindow = options.reauthWindowMs ?? REAUTH_WINDOW_MS;
   const maxName = options.maxNameLength ?? 64;
-  const parseProfile = options.parseProfile ?? (defaultProfile as (input: unknown) => P);
+  const parseProfile = options.parseProfile ?? (defaultProfile as unknown as NonNullable<AuthOptions<P>["parseProfile"]>);
 
   // ---- helpers ------------------------------------------------------------
 
@@ -136,11 +139,14 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
 
   /** A state-changing request must come from our own pages. SameSite=Lax
    * already keeps the cookie off cross-site POSTs; this refuses them outright,
-   * so nothing depends on a browser getting SameSite right. */
+   * so nothing depends on a browser getting SameSite right. Browsers send
+   * Origin on every POST; without one, only a same-origin fetch metadata
+   * header will do. */
   function sameOrigin(req: Request): boolean {
     if (req.method === "GET" || req.method === "HEAD") return true;
     const origin = req.headers.get("origin");
-    return origin === null || relyingParty(req).origins.includes(origin);
+    if (origin === null) return req.headers.get("sec-fetch-site") === "same-origin";
+    return relyingParty(req).origins.includes(origin);
   }
 
   async function session(req: Request): Promise<Session | null> {
@@ -193,9 +199,9 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
     return name;
   }
 
-  function profileFrom(input: unknown, current: P | null): P {
+  function profileFrom(input: unknown, current: P | null, patch: unknown): P {
     try {
-      return parseProfile(input, current);
+      return parseProfile(input, current, patch);
     } catch (e) {
       if (e instanceof AuthInputError) fail(400, e.message);
       throw e;
@@ -214,7 +220,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       // Discoverable, so signing in on a new device needs no username.
       authenticatorSelection: { residentKey: "required", userVerification: "required" },
     });
-    await store.createChallenge(options_.challenge, purpose, userId, now());
+    await store.createChallenge(options_.challenge, purpose, userId, now(), purpose === "register" ? name : null);
     return options_;
   }
 
@@ -272,11 +278,10 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
     return key.userId;
   }
 
-  async function sendCodeFor(email: string, purpose: CodePurpose, userId: string): Promise<"ok" | "rate-limited"> {
+  async function sendCodeFor(email: string, purpose: CodePurpose, userId: string): Promise<void> {
     const code = sixDigitCode();
     const issued = await store.issueCode(email, purpose, userId, await hashCode(email, purpose, code), now());
     if (issued === "ok") await options.sendCode!(email, code, purpose);
-    return issued;
   }
 
   // ---- routes ---------------------------------------------------------------
@@ -313,7 +318,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const body = await json<{ name?: unknown; turnstileToken?: unknown }>(req);
       const name = parseName(body.name);
       await requireHuman(req, body.turnstileToken);
-      if (options.allowSignup && !(await options.allowSignup(req, { name }))) {
+      if (options.allowSignup && !(await options.allowSignup(req, { name, body }))) {
         fail(403, "Sign-up is closed");
       }
       return Response.json(await registration(req, newAccountId(), name, "register"));
@@ -321,14 +326,15 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
 
     "POST register-verify": async (req) => {
       await limit(req, "register");
-      const body = await json<{ response?: RegistrationResponseJSON; name?: unknown; profile?: unknown }>(req);
-      const name = parseName(body.name);
-      const profile = profileFrom(body.profile, null);
+      const body = await json<{ response?: RegistrationResponseJSON; profile?: unknown }>(req);
+      const profile = profileFrom(body.profile, null, body.profile);
       const response = body.response ?? fail(400, "Missing passkey response");
 
       const challenge = clientChallenge(response);
       const issued = await store.consumeChallenge(challenge, "register", now());
       const userId = issued?.userId ?? fail(400, "That sign-up expired — try again");
+      // The name sign-up was approved under (allowSignup, Turnstile), not a new one.
+      const name = issued?.name ?? fail(400, "That sign-up expired — try again");
       // Checked before the account exists, so a refusal leaves nothing behind.
       const key = await verifiedPasskey(req, response, challenge, userId);
 
@@ -401,10 +407,14 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const s = await requireSession(req);
       const account = (await store.account(s.userId)) ?? fail(401, "Not signed in");
       const existing = await store.passkeysFor(s.userId);
-      // An account with no passkey is one just recovered by email: its
-      // session is how it gets one back, and it has nothing else to prove
-      // itself with. Otherwise adding a key is a way in — so, step-up.
-      if (existing.length > 0) requireFresh(s);
+      // Adding a key is a way in, so it needs a fresh session. One with no
+      // passkey to confirm with was just recovered by email — fresh for the
+      // window, which is the time it has to add one. After that, the emailed
+      // code is the only proof left: recover again.
+      if (existing.length === 0 && now() - s.verifiedAt > reauthWindow) {
+        fail(403, "Recover your account by email again to add a passkey");
+      }
+      requireFresh(s);
       return Response.json(await registration(req, s.userId, account.name, "add-passkey", existing));
     },
 
@@ -480,12 +490,20 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const email = parseEmail((await json<{ email?: unknown }>(req)).email);
 
       // Someone else's email: answer as if sent, and send nothing. Open sign-up
-      // would otherwise make this a way to ask who uses the app.
+      // would otherwise make this a way to ask who uses the app — so it counts
+      // against the same hourly cap, and the real send happens after the
+      // answer, the same way recover-start's does.
       const owner = await store.accountByEmail(email);
-      if (owner && owner.id !== s.userId) return Response.json({ ok: true });
-
-      if ((await sendCodeFor(email, "verify-email", s.userId)) === "rate-limited") {
-        fail(429, "Too many codes sent to that email — try again in an hour");
+      const mine = !owner || owner.id === s.userId;
+      const code = sixDigitCode();
+      const issued = mine
+        ? await store.issueCode(email, "verify-email", s.userId, await hashCode(email, "verify-email", code), now())
+        : await store.noteCodeRequest(email, now());
+      if (issued === "rate-limited") fail(429, "Too many codes sent to that email — try again in an hour");
+      if (mine) {
+        const send = options.sendCode!(email, code, "verify-email");
+        if (options.waitUntil) options.waitUntil(send.catch(() => {}));
+        else await send;
       }
       return Response.json({ ok: true });
     },
@@ -515,7 +533,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const patch = body.profile && typeof body.profile === "object" ? body.profile : undefined;
       const account = await store.updateAccount(userId, {
         name: body.name === undefined ? undefined : parseName(body.name),
-        profile: patch === undefined ? undefined : profileFrom({ ...current.profile, ...patch }, current.profile as P),
+        profile: patch === undefined ? undefined : profileFrom({ ...current.profile, ...patch }, current.profile as P, patch),
       });
       return Response.json({ account });
     },

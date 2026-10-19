@@ -8,6 +8,7 @@ import {
   CODE_TTL_MS,
   CODES_PER_HOUR,
   MAX_CODE_FAILURES,
+  MAX_GLOBAL_CODE_FAILURES,
   SCHEMA_VERSION,
   SESSION_TTL_MS,
 } from "./store";
@@ -23,13 +24,13 @@ beforeEach(() => {
 describe("challenges", () => {
   it("are single use", () => {
     store.createChallenge("c1", "login", null, 0);
-    expect(store.consumeChallenge("c1", "login", 1)).toEqual({ userId: null });
+    expect(store.consumeChallenge("c1", "login", 1)).toEqual({ userId: null, name: null });
     expect(store.consumeChallenge("c1", "login", 2)).toBeNull();
   });
 
   it("carry the account a registration is minting", () => {
-    store.createChallenge("c1", "register", "u_new", 0);
-    expect(store.consumeChallenge("c1", "register", 1)).toEqual({ userId: "u_new" });
+    store.createChallenge("c1", "register", "u_new", 0, "Sam");
+    expect(store.consumeChallenge("c1", "register", 1)).toEqual({ userId: "u_new", name: "Sam" });
   });
 
   // A login challenge replayed into the registration flow (or vice versa)
@@ -171,6 +172,27 @@ describe("codes", () => {
     expect(store.redeemCode("a@example.com", "recover", "right", later + DAY + 1)).toEqual({ userId: "u1" });
   });
 
+  // Ten guesses at each of many known emails would otherwise add up.
+  it(`stop redeeming anywhere after ${MAX_GLOBAL_CODE_FAILURES} wrong guesses a day across every email`, () => {
+    for (let i = 0; i < MAX_GLOBAL_CODE_FAILURES; i++) {
+      store.issueCode(`e${i}@example.com`, "recover", "u1", "real", 0);
+      store.redeemCode(`e${i}@example.com`, "recover", "wrong", 1);
+    }
+    store.issueCode("fresh@example.com", "recover", "u2", "right", 2);
+    expect(store.redeemCode("fresh@example.com", "recover", "right", 3)).toBeNull();
+    store.issueCode("fresh@example.com", "recover", "u2", "right", DAY + 2);
+    expect(store.redeemCode("fresh@example.com", "recover", "right", DAY + 3)).toEqual({ userId: "u2" });
+  });
+
+  // Changing the recovery email must retire a code already sent to the old one.
+  it("for recovery die when the account's email changes", () => {
+    store.createAccount("u1", "A", PROFILE, 0);
+    store.setEmail("u1", "old@example.com");
+    store.issueCode("old@example.com", "recover", "u1", "hash", 0);
+    store.setEmail("u1", "new@example.com");
+    expect(store.redeemCode("old@example.com", "recover", "hash", 1)).toBeNull();
+  });
+
   it(`are capped at ${CODES_PER_HOUR} an hour per email`, () => {
     for (let i = 0; i < CODES_PER_HOUR; i++) {
       expect(store.issueCode("a@example.com", "recover", "u1", `h${i}`, i)).toBe("ok");
@@ -248,5 +270,15 @@ describe("a database from schema version 1", () => {
     // Opening it again is a no-op, not a second ALTER.
     expect(() => new AuthStore(memorySql(db))).not.toThrow();
     expect(db.prepare(`SELECT value FROM durable_auth_meta WHERE key = 'schema'`).get()).toEqual({ value: SCHEMA_VERSION });
+  });
+
+  // Roll a deploy back and forward again: the older code must not record its
+  // older version, or the upgrade re-runs its ALTERs and the DO never starts.
+  it("survives older code opening it, then newer code again", () => {
+    const db = v1();
+    new AuthStore(memorySql(db));
+    db.prepare(`UPDATE durable_auth_meta SET value = ? WHERE key = 'schema'`).run(SCHEMA_VERSION + 1); // "newer"
+    expect(() => new AuthStore(memorySql(db))).not.toThrow();
+    expect(db.prepare(`SELECT value FROM durable_auth_meta WHERE key = 'schema'`).get()).toEqual({ value: SCHEMA_VERSION + 1 });
   });
 });

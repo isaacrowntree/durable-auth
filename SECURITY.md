@@ -31,9 +31,16 @@ latest release before reporting.
 - Session tokens: 32 random bytes; the store keeps `SHA-256(token)` only.
 - Codes: six digits, rejection-sampled from 32-bit values; stored as
   `SHA-256(purpose:email:code)`. The attempt caps (5 a code, 10 a day per
-  email, 5 codes an hour per email) are the protection, not the hash.
+  email, 1,000 a day across all emails, 5 codes an hour per email) are the
+  protection, not the hash. Changing the recovery email retires codes sent
+  to the old one.
 - Challenges: single use, deleted on first sight, bound to a purpose and (for
   registration, adding a passkey and step-up) to an account.
 - WebAuthn: `userVerification: "required"` everywhere; verification is
   `@simplewebauthn/server`.
-- Every state-changing route checks `Origin` against the allowed origins.
+- Every state-changing route checks `Origin` against the allowed origins; a
+  request without one needs `Sec-Fetch-Site: same-origin`.
+- Step-up gates are checked before any effect, so the client's single retry
+  after confirming is safe.
+- Schema migrations only add, and a database is never marked older than it
+  is, so rolling a deploy back and forward again is safe.

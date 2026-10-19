@@ -69,6 +69,11 @@ export const CODES_PER_HOUR = 5;
 /** Wrong guesses per email per day, across every code issued to it. Past
  * this, the email can't be used to recover for a day. */
 export const MAX_CODE_FAILURES = 10;
+/** Wrong guesses a day across every email. The per-email caps don't stop
+ * ten guesses at each of a hundred thousand known emails; this does, at the
+ * price that a flood of wrong guesses pauses recovery for everyone until it
+ * ages out. Put Turnstile and rate limits in front so it never comes to that. */
+export const MAX_GLOBAL_CODE_FAILURES = 1000;
 
 /** Version 1 is the schema as first shipped; later versions are ALTERs on top
  * (MIGRATIONS), so a database from any earlier release opens in place. */
@@ -136,6 +141,10 @@ const MIGRATIONS: string[][] = [
     `ALTER TABLE passkeys ADD COLUMN last_used_at INTEGER`,
     `ALTER TABLE passkeys ADD COLUMN device_type TEXT`,
     `ALTER TABLE passkeys ADD COLUMN backed_up INTEGER`,
+    // The name a sign-up was approved under, so the verify step can't swap it.
+    `ALTER TABLE challenges ADD COLUMN name TEXT`,
+    `CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at)`,
+    `CREATE INDEX IF NOT EXISTS code_failures_at ON code_failures(at)`,
   ],
 ];
 
@@ -170,15 +179,17 @@ export class AuthStore {
     return this.sql.exec(query, ...bindings).toArray() as T[];
   }
 
+  /** Bring an older database up to SCHEMA_VERSION. A newer one is left as it
+   * is — migrations only add, so older code runs on it, and recording the
+   * older version would make the next upgrade re-run its ALTERs and fail. */
   private migrate(): void {
     const [row] = this.rows<{ value: number }>(`SELECT value FROM durable_auth_meta WHERE key = 'schema'`);
-    for (let version = row?.value ?? 1; version < SCHEMA_VERSION; version++) {
+    const from = row?.value ?? 1;
+    if (from >= SCHEMA_VERSION) return;
+    for (let version = from; version < SCHEMA_VERSION; version++) {
       for (const stmt of MIGRATIONS[version - 1]!) this.sql.exec(stmt);
     }
-    this.sql.exec(
-      `INSERT OR REPLACE INTO durable_auth_meta (key, value) VALUES ('schema', ?)`,
-      SCHEMA_VERSION,
-    );
+    this.sql.exec(`INSERT OR REPLACE INTO durable_auth_meta (key, value) VALUES ('schema', ?)`, SCHEMA_VERSION);
   }
 
   /** Drop everything past its expiry. Each table is also pruned as it's
@@ -196,14 +207,21 @@ export class AuthStore {
   /** Remember a WebAuthn challenge we issued. Registration binds it to the
    * account id it's minting, and step-up to the account confirming itself,
    * so the verify step can't be pointed elsewhere. */
-  createChallenge(challenge: string, purpose: ChallengePurpose, userId: string | null, now: number): void {
+  createChallenge(
+    challenge: string,
+    purpose: ChallengePurpose,
+    userId: string | null,
+    now: number,
+    name: string | null = null,
+  ): void {
     this.sql.exec(`DELETE FROM challenges WHERE expires_at <= ?`, now);
     this.sql.exec(
-      `INSERT INTO challenges (challenge, purpose, user_id, expires_at) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO challenges (challenge, purpose, user_id, expires_at, name) VALUES (?, ?, ?, ?, ?)`,
       challenge,
       purpose,
       userId,
       now + CHALLENGE_TTL_MS,
+      name,
     );
   }
 
@@ -212,15 +230,15 @@ export class AuthStore {
     challenge: string,
     purpose: ChallengePurpose,
     now: number,
-  ): { userId: string | null } | null {
-    const [row] = this.rows<{ purpose: string; user_id: string | null; expires_at: number }>(
-      `SELECT purpose, user_id, expires_at FROM challenges WHERE challenge = ?`,
+  ): { userId: string | null; name: string | null } | null {
+    const [row] = this.rows<{ purpose: string; user_id: string | null; expires_at: number; name: string | null }>(
+      `SELECT purpose, user_id, expires_at, name FROM challenges WHERE challenge = ?`,
       challenge,
     );
     if (!row) return null;
     this.sql.exec(`DELETE FROM challenges WHERE challenge = ?`, challenge);
     if (row.purpose !== purpose || row.expires_at <= now) return null;
-    return { userId: row.user_id };
+    return { userId: row.user_id, name: row.name };
   }
 
   // ---- accounts ----------------------------------------------------------
@@ -266,6 +284,8 @@ export class AuthStore {
     const owner = this.accountByEmail(normalized);
     if (owner && owner.id !== id) return "taken";
     this.sql.exec(`UPDATE users SET email = ? WHERE id = ?`, normalized, id);
+    // A recovery code already sent to the old address stops working with it.
+    this.sql.exec(`DELETE FROM codes WHERE user_id = ? AND purpose = 'recover' AND email IS NOT ?`, id, normalized);
     return this.account(id);
   }
 
@@ -416,14 +436,8 @@ export class AuthStore {
     now: number,
   ): "ok" | "rate-limited" {
     const normalized = normalizeEmail(email);
-    this.sql.exec(`DELETE FROM code_log WHERE at <= ?`, now - HOUR);
     this.sql.exec(`DELETE FROM codes WHERE expires_at <= ?`, now);
-    const [{ n }] = this.rows<{ n: number }>(`SELECT COUNT(*) AS n FROM code_log WHERE email = ?`, normalized) as [
-      { n: number },
-    ];
-    if (n >= CODES_PER_HOUR) return "rate-limited";
-
-    this.sql.exec(`INSERT INTO code_log (email, at) VALUES (?, ?)`, normalized, now);
+    if (this.noteCodeRequest(normalized, now) === "rate-limited") return "rate-limited";
     this.sql.exec(
       `INSERT OR REPLACE INTO codes (email, purpose, user_id, code_hash, expires_at, attempts) VALUES (?, ?, ?, ?, ?, 0)`,
       normalized,
@@ -435,6 +449,20 @@ export class AuthStore {
     return "ok";
   }
 
+  /** Count a request for a code to `email` against its hourly cap, sending
+   * nothing. issueCode does this itself; call it alone where a code must look
+   * sent but isn't (someone else's email), so the cap can't tell them apart. */
+  noteCodeRequest(email: string, now: number): "ok" | "rate-limited" {
+    const normalized = normalizeEmail(email);
+    this.sql.exec(`DELETE FROM code_log WHERE at <= ?`, now - HOUR);
+    const [{ n }] = this.rows<{ n: number }>(`SELECT COUNT(*) AS n FROM code_log WHERE email = ?`, normalized) as [
+      { n: number },
+    ];
+    if (n >= CODES_PER_HOUR) return "rate-limited";
+    this.sql.exec(`INSERT INTO code_log (email, at) VALUES (?, ?)`, normalized, now);
+    return "ok";
+  }
+
   /** Check a code. Success burns it; every failure counts, and the code dies
    * at CODE_MAX_ATTEMPTS — six digits survive five guesses, not a million.
    * Failures also count against the email across codes (MAX_CODE_FAILURES a
@@ -442,11 +470,11 @@ export class AuthStore {
   redeemCode(email: string, purpose: CodePurpose, codeHash: string, now: number): { userId: string } | null {
     const normalized = normalizeEmail(email);
     this.sql.exec(`DELETE FROM code_failures WHERE at <= ?`, now - DAY);
-    const [{ failures }] = this.rows<{ failures: number }>(
-      `SELECT COUNT(*) AS failures FROM code_failures WHERE email = ?`,
+    const [{ failures, everyone }] = this.rows<{ failures: number; everyone: number }>(
+      `SELECT SUM(email = ?) AS failures, COUNT(*) AS everyone FROM code_failures`,
       normalized,
-    ) as [{ failures: number }];
-    if (failures >= MAX_CODE_FAILURES) return null;
+    ) as [{ failures: number | null; everyone: number }];
+    if ((failures ?? 0) >= MAX_CODE_FAILURES || everyone >= MAX_GLOBAL_CODE_FAILURES) return null;
     const [row] = this.rows<{ user_id: string; code_hash: string; expires_at: number; attempts: number }>(
       `SELECT user_id, code_hash, expires_at, attempts FROM codes WHERE email = ? AND purpose = ?`,
       normalized,
