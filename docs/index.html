@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>durable-auth — Passkey sign-in for Cloudflare Workers, kept in one Durable Object</title>
+    <meta
+      name="description"
+      content="Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database."
+    />
+    <link rel="canonical" href="https://isaacrowntree.com/durable-auth/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="durable-auth" />
+    <meta property="og:url" content="https://isaacrowntree.com/durable-auth/" />
+    <meta property="og:title" content="durable-auth — Passkey sign-in for Cloudflare Workers" />
+    <meta
+      property="og:description"
+      content="Accounts, passkeys, sessions and email recovery, kept in one Durable Object's SQLite. No auth service, no user database, nothing to configure in a dashboard."
+    />
+    <meta property="og:image" content="https://isaacrowntree.com/durable-auth/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="durable-auth: a request log where a stale session is asked to confirm with a passkey before deleting an account, then retried."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <meta name="theme-color" content="#f7f6fb" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400..700&family=Atkinson+Hyperlegible+Next:ital,wght@0,400..800;1,400..800&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "durable-auth",
+        "description": "Passkey sign-in for Cloudflare Workers, kept in one Durable Object: accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite.",
+        "url": "https://isaacrowntree.com/durable-auth/",
+        "codeRepository": "https://github.com/isaacrowntree/durable-auth",
+        "programmingLanguage": "TypeScript",
+        "runtimePlatform": "Cloudflare Workers",
+        "license": "https://opensource.org/licenses/MIT",
+        "version": "0.1.0",
+        "author": { "@type": "Person", "name": "Isaac Rowntree", "url": "https://isaacrowntree.com/" },
+        "keywords": "cloudflare, durable objects, workers, passkeys, webauthn, authentication, passwordless, sessions, step-up, account recovery"
+      }
+    </script>
+  </head>
+<body>
+    <header class="masthead">
+      <div class="shell masthead__inner">
+        <a class="wordmark" href="/durable-auth/">durable<span>-</span>auth</a>
+        <nav aria-label="Sections">
+          <a href="#why" class="opt">Why</a>
+          <a href="#start">Start</a>
+          <a href="#step-up" class="opt">Step-up</a>
+          <a href="#security">Security</a>
+          <a href="vs.html" class="opt">Compare</a>
+          <a href="https://github.com/isaacrowntree/durable-auth">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <div class="shell">
+        <section class="hero hero--split">
+          <div class="hero__pitch">
+            <h1>Passkey <span class="nowrap">sign-in</span> for Cloudflare Workers, kept in one Durable&nbsp;Object</h1>
+            <p class="hero__lede">
+              Accounts, passkeys, sessions and email recovery in the Durable Object's own
+              SQLite. <strong>No auth service, no user database, nothing to configure in a
+              dashboard.</strong>
+            </p>
+
+            <div class="hero__actions">
+              <div class="install">
+                <span class="install__prompt" aria-hidden="true">$</span>
+                <span id="install-cmd">npm i durable-auth</span>
+                <button type="button" id="copy" data-copied="false">Copy</button>
+              </div>
+            </div>
+
+            <ul class="links">
+              <li><a class="links__main" href="https://liftlog.zackdesign.biz">Try it in Rampset</a></li>
+              <li><a href="https://github.com/isaacrowntree/durable-auth">GitHub</a></li>
+              <li><a href="https://www.npmjs.com/package/durable-auth">npm</a></li>
+              <li><a href="https://zackdesign.biz/durable-auth/">The write-up</a></li>
+            </ul>
+
+            <ul class="facts" aria-label="Package facts">
+              <li>One Durable Object</li>
+              <li>Passkeys only</li>
+              <li>TypeScript</li>
+              <li>MIT</li>
+            </ul>
+          </div>
+
+          <div class="hero__demo" aria-labelledby="demo-h">
+            <h2 id="demo-h" class="demo__title">Step-up, simulated in this page</h2>
+
+            <div class="demo demo--paper">
+              <div class="demo__head">
+                <span>Session</span>
+                <span class="demo__sim">Runs in this page. Nothing is sent.</span>
+              </div>
+
+              <div class="fresh" id="fresh" data-state="fresh">
+                <div class="fresh__row">
+                  <span class="fresh__state" id="fresh-state">Fresh</span>
+                  <span>last proved with a passkey</span>
+                  <span class="fresh__age" id="fresh-age">0:00 ago</span>
+                </div>
+                <div class="fresh__track" aria-hidden="true"><div class="fresh__fill" id="fresh-fill"></div></div>
+                <div class="fresh__legend" aria-hidden="true"><span>0 min</span><span>reauthWindowMs: 5 min</span></div>
+              </div>
+
+              <div class="demo__controls">
+                <button type="button" class="btn" id="act-rename">Rename</button>
+                <button type="button" class="btn btn--gated" id="act-email">Change email</button>
+                <button type="button" class="btn btn--gated" id="act-delete">Delete account</button>
+                <button type="button" class="btn btn--quiet" id="act-wait">Wait 6 min</button>
+              </div>
+
+              <div class="reqlog" id="reqlog" role="log" aria-live="polite" aria-label="Requests the client made">
+              </div>
+
+              <div class="sheet" id="sheet" hidden role="dialog" aria-labelledby="sheet-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
+                  <path d="M12 11v3.5M8.5 9.5a3.5 3.5 0 0 1 7 0v1.5c0 2.5-.6 4.6-1.6 6.3M8.5 12c0 2.4-.6 4.5-1.6 6.1" />
+                  <path d="M5.5 8.5a7 7 0 0 1 13 0M4.5 12.5c0 1.6-.3 3.1-.8 4.4M19.5 12.5c0 2.3-.4 4.4-1.2 6.2" />
+                </svg>
+                <p class="sheet__title" id="sheet-title">Confirm it's you</p>
+                <p class="sheet__sub">The browser's passkey prompt: Face ID, Touch ID or Windows Hello</p>
+                <div class="sheet__actions">
+                  <button type="button" class="btn btn--go" id="sheet-ok">Use passkey</button>
+                  <button type="button" class="btn btn--quiet" id="sheet-cancel">Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <p class="demo__note">
+              A session that last proved its user more than five minutes ago gets
+              <code>403 { reauth: true }</code> from a sensitive route. The client asks for
+              the passkey and retries once, by itself. Renaming isn't sensitive, so it never
+              asks. Everything here runs in this page; nothing is sent anywhere.
+            </p>
+          </div>
+        </section>
+
+        <section id="why" aria-labelledby="why-h">
+          <div class="section__head">
+            <h2 id="why-h">Every usual way to log in costs something on Workers</h2>
+            <p>
+              <strong>Cloudflare Access</strong> is a dashboard allowlist: fine for a
+              team, the wrong shape for an app anyone can sign up to.
+              <strong>Hosted auth</strong> like Clerk or Auth0 is another vendor, another
+              bill, and your users live somewhere else. <strong>Auth libraries</strong>
+              like Better Auth want a database and a schema, which on Workers means D1
+              and migrations before anyone can sign in.
+            </p>
+            <p>
+              A Durable Object already has the property sign-in needs most: it does one
+              thing at a time, with its own SQLite. "Check this code, then burn it" and
+              "check this challenge, then consume it" are atomic without transactions.
+              "This email belongs to one account" is a plain <code>UNIQUE</code>
+              constraint.
+            </p>
+          </div>
+
+          <ul class="points">
+            <li>
+              <h3>Small on purpose</h3>
+              <p>
+                One Durable Object and about 1,500 lines of TypeScript. The routes are one
+                function from a <code>Request</code> to a <code>Response</code>.
+              </p>
+            </li>
+            <li>
+              <h3>The crypto isn't hand-rolled</h3>
+              <p>
+                Passkey verification is <a href="https://simplewebauthn.dev">SimpleWebAuthn</a>,
+                the one part nobody should write themselves. It's the only runtime
+                dependency, server and browser halves.
+              </p>
+            </li>
+            <li>
+              <h3>No username, no password</h3>
+              <p>
+                Discoverable passkeys: Face ID, Touch ID, Windows Hello or a security key.
+                The passkey says who they are, so there is nothing to type and nothing to
+                phish.
+              </p>
+            </li>
+            <li>
+              <h3>Running in production</h3>
+              <p>
+                Extracted from <a href="https://liftlog.zackdesign.biz">Rampset</a>, an
+                offline-first barbell app, where it opens the app's original database in
+                place. It pairs with <a href="https://isaacrowntree.com/durable-sync/">durable-sync</a>.
+              </p>
+            </li>
+          </ul>
+        </section>
+
+        <section id="what" aria-labelledby="what-h">
+          <div class="section__head">
+            <h2 id="what-h">The whole account lifecycle</h2>
+          </div>
+
+          <ul class="points points--three">
+            <li>
+              <h3>Passkeys</h3>
+              <p>
+                Discoverable, so no username. User verification required. Single-use
+                challenges, bound to their purpose and (for registration, adding a passkey
+                and step-up) to the account.
+              </p>
+            </li>
+            <li>
+              <h3>Sessions</h3>
+              <p>
+                256-bit tokens in an <code>HttpOnly</code>, <code>SameSite=Lax</code>,
+                <code>__Host-</code> cookie. Only a SHA-256 hash is stored. Sliding one-year
+                expiry.
+              </p>
+            </li>
+            <li>
+              <h3>Step-up</h3>
+              <p>
+                Deleting the account, changing the recovery email, and adding or removing a
+                passkey need a passkey used in the last 5 minutes. The client asks and
+                retries on its own.
+              </p>
+            </li>
+            <li>
+              <h3>Recovery</h3>
+              <p>
+                Six-digit codes by email, 10-minute expiry, hard caps on guessing.
+                Recovering signs every device out and revokes every passkey.
+              </p>
+            </li>
+            <li>
+              <h3>No enumeration</h3>
+              <p>
+                Recovery and adding an email answer the same way, with the same rate limits
+                and (with <code>waitUntil</code>) the same timing, whether or not the email
+                is registered.
+              </p>
+            </li>
+            <li>
+              <h3>Also</h3>
+              <p>
+                Passkey list and remove, sign out other devices, an
+                <code>allowSignup</code> hook, per-IP rate limits, Turnstile, and a daily
+                alarm that sweeps expired rows.
+              </p>
+            </li>
+          </ul>
+        </section>
+
+        <section id="start" aria-labelledby="start-h">
+          <div class="section__head">
+            <h2 id="start-h">A Worker, a binding, a client</h2>
+          </div>
+
+          <div class="steps">
+            <div class="step">
+              <h3>Server</h3>
+              <p>
+                Extend the Durable Object and export it. Every account lives in one
+                instance, which is what makes an email belong to exactly one account.
+                <code>auth.handle</code> answers everything under <code>/auth/*</code> and
+                returns <code>null</code> for anything else.
+              </p>
+              <pre><code><span class="tok-c">// worker.ts</span>
+<span class="tok-k">import</span> { AuthDurableObject, createAuth, cloudflareEmail, rateLimitBinding }
+  <span class="tok-k">from</span> <span class="tok-s">"durable-auth/server"</span>;
+
+<span class="tok-k">export class</span> Auth <span class="tok-k">extends</span> AuthDurableObject {}
+
+<span class="tok-k">export default</span> {
+  <span class="tok-k">async</span> <span class="tok-f">fetch</span>(req: Request, env: Env, ctx: ExecutionContext) {
+    <span class="tok-k">const</span> auth = <span class="tok-f">createAuth</span>({
+      store: env.AUTH,
+      rpName: <span class="tok-s">"My App"</span>,
+      sendCode: <span class="tok-f">cloudflareEmail</span>(env.EMAIL, { from: <span class="tok-s">"noreply@myapp.com"</span>, appName: <span class="tok-s">"My App"</span> }),
+      rateLimit: <span class="tok-f">rateLimitBinding</span>(env.AUTH_LIMITER),
+      waitUntil: (work) =&gt; ctx.<span class="tok-f">waitUntil</span>(work),
+    });
+
+    <span class="tok-k">const</span> handled = <span class="tok-k">await</span> auth.<span class="tok-f">handle</span>(req); <span class="tok-c">// everything under /auth/*</span>
+    <span class="tok-k">if</span> (handled) <span class="tok-k">return</span> handled;
+
+    <span class="tok-k">const</span> account = <span class="tok-k">await</span> auth.<span class="tok-f">account</span>(req); <span class="tok-c">// your routes: who's signed in?</span>
+    <span class="tok-k">if</span> (!account) <span class="tok-k">return new</span> Response(<span class="tok-s">"Sign in first"</span>, { status: <span class="tok-s">401</span> });
+    <span class="tok-k">return new</span> Response(<span class="tok-s">`Hello, ${account.name}`</span>);
+  },
+};</code></pre>
+              <pre><code><span class="tok-c">// wrangler.jsonc</span>
+{
+  <span class="tok-s">"durable_objects"</span>: { <span class="tok-s">"bindings"</span>: [{ <span class="tok-s">"name"</span>: <span class="tok-s">"AUTH"</span>, <span class="tok-s">"class_name"</span>: <span class="tok-s">"Auth"</span> }] },
+  <span class="tok-s">"migrations"</span>: [{ <span class="tok-s">"tag"</span>: <span class="tok-s">"v1"</span>, <span class="tok-s">"new_sqlite_classes"</span>: [<span class="tok-s">"Auth"</span>] }],
+  <span class="tok-c">// Optional: recovery email (onboard the domain with `wrangler email sending enable`).</span>
+  <span class="tok-s">"send_email"</span>: [{ <span class="tok-s">"name"</span>: <span class="tok-s">"EMAIL"</span> }],
+  <span class="tok-c">// Optional: per-IP limits on the sign-in routes.</span>
+  <span class="tok-s">"ratelimits"</span>: [{ <span class="tok-s">"name"</span>: <span class="tok-s">"AUTH_LIMITER"</span>, <span class="tok-s">"namespace_id"</span>: <span class="tok-s">"1001"</span>,
+                   <span class="tok-s">"simple"</span>: { <span class="tok-s">"limit"</span>: 10, <span class="tok-s">"period"</span>: 60 } }]
+}</code></pre>
+              <p class="small-note">
+                Onboarding a domain to Cloudflare Email Sending only adds records on a
+                <code>cf-bounce</code> subdomain, so a domain whose mail is on Gmail or
+                Workspace keeps working.
+              </p>
+            </div>
+
+            <div class="step">
+              <h3>Client</h3>
+              <p>
+                Every call either returns what it promised or throws an
+                <code>AuthError</code> with a message fit to show the user.
+                <code>authErrorMessage(e, fallback)</code> returns <code>null</code> when
+                the user simply dismissed the passkey prompt.
+              </p>
+              <pre><code><span class="tok-k">import</span> { createAuthClient, authErrorMessage }
+  <span class="tok-k">from</span> <span class="tok-s">"durable-auth/client"</span>;
+
+<span class="tok-k">const</span> auth = <span class="tok-f">createAuthClient</span>();
+
+<span class="tok-k">await</span> auth.<span class="tok-f">register</span>(<span class="tok-s">"Sam"</span>);   <span class="tok-c">// passkey prompt → account → signed in</span>
+<span class="tok-k">await</span> auth.<span class="tok-f">signIn</span>();          <span class="tok-c">// passkey prompt, no username</span>
+<span class="tok-k">await</span> auth.<span class="tok-f">session</span>();         <span class="tok-c">// Account | null (signed out) | undefined (offline)</span>
+
+<span class="tok-k">await</span> auth.<span class="tok-f">startEmailVerification</span>(<span class="tok-s">"sam@example.com"</span>);
+<span class="tok-k">await</span> auth.<span class="tok-f">finishEmailVerification</span>(<span class="tok-s">"sam@example.com"</span>, <span class="tok-s">"123456"</span>);
+
+<span class="tok-c">// On a new device, after losing the old one:</span>
+<span class="tok-k">await</span> auth.<span class="tok-f">startRecovery</span>(<span class="tok-s">"sam@example.com"</span>);
+<span class="tok-k">await</span> auth.<span class="tok-f">finishRecovery</span>(<span class="tok-s">"sam@example.com"</span>, <span class="tok-s">"123456"</span>);
+<span class="tok-k">await</span> auth.<span class="tok-f">addPasskey</span>();      <span class="tok-c">// recovery revoked the old passkeys</span>
+
+<span class="tok-k">await</span> auth.<span class="tok-f">deleteAccount</span>();   <span class="tok-c">// may prompt for the passkey first (step-up)</span></code></pre>
+              <p class="small-note">
+                Also: <code>passkeys()</code>, <code>removePasskey(id)</code>,
+                <code>signOut()</code>, <code>signOutOtherDevices()</code>,
+                <code>updateProfile(patch)</code>, <code>config()</code>,
+                <code>reauth()</code>, and <code>passkeysSupported()</code>. Options:
+                <code>basePath</code> (default <code>"/auth"</code>) and
+                <code>timeoutMs</code> (default 15 s). There's a
+                <a href="https://github.com/isaacrowntree/durable-auth/tree/main/examples/basic">runnable example</a>:
+                a 50-line Worker and a one-page script, via <code>npm run example</code>.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section id="options" aria-labelledby="opt-h">
+          <div class="section__head">
+            <h2 id="opt-h">Server options: <code>createAuth(options)</code></h2>
+            <p>Only <code>store</code> and <code>rpName</code> are required.</p>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <caption class="visually-hidden">createAuth options, their defaults and what they do</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Option</th>
+                  <th scope="col">Default</th>
+                  <th scope="col">What it does</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">store</th><td class="mono">required</td><td>The Durable Object namespace.</td></tr>
+                <tr><th scope="row">rpName</th><td class="mono">required</td><td>Shown in the passkey prompt.</td></tr>
+                <tr><th scope="row">basePath</th><td class="mono">"/auth"</td><td>Routes live at <code>&lt;basePath&gt;/&lt;action&gt;</code>.</td></tr>
+                <tr><th scope="row">cookieName</th><td class="mono">"session"</td><td><code>__Host-</code> is added over HTTPS (and dropped on plain-http localhost only).</td></tr>
+                <tr><th scope="row">rpID</th><td class="mono">request hostname</td><td>Set it to share passkeys across subdomains.</td></tr>
+                <tr><th scope="row">origins</th><td class="mono">request origin</td><td>Allowed for passkeys and for POSTs.</td></tr>
+                <tr><th scope="row">parseProfile</th><td class="mono">any object ≤ 4 KB</td><td>Validate your own account data; throw <code>AuthInputError</code> to refuse.</td></tr>
+                <tr><th scope="row">allowSignup</th><td class="mono">everyone</td><td><code>(req, { name, body }) =&gt; boolean</code>: invite codes, a waitlist, a domain.</td></tr>
+                <tr><th scope="row">sendCode</th><td class="mono">off</td><td><code>(to, code, purpose) =&gt; Promise&lt;void&gt;</code>; <code>cloudflareEmail(...)</code> is one. Off means no email recovery.</td></tr>
+                <tr><th scope="row">turnstile</th><td class="mono">off</td><td><code>{ siteKey, verify: turnstileVerifier(secret) }</code>, on sign-up and recovery.</td></tr>
+                <tr><th scope="row">rateLimit</th><td class="mono">off</td><td><code>(key) =&gt; Promise&lt;boolean&gt;</code>; <code>rateLimitBinding(...)</code> is one. Keys look like <code>login:&lt;ip&gt;</code>.</td></tr>
+                <tr><th scope="row">onDeleteAccount</th><td class="mono">none</td><td>Remove your app's data for the user before the account goes. If it throws, the account survives to retry.</td></tr>
+                <tr><th scope="row">waitUntil</th><td class="mono">none</td><td>Pass it, or recovery answers after sending and leaks timing.</td></tr>
+                <tr><th scope="row">reauthWindowMs</th><td class="mono">5 min</td><td>How recent "recent" is for step-up.</td></tr>
+                <tr><th scope="row">maxNameLength</th><td class="mono">64</td><td>Longest display name accepted.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="routes" aria-labelledby="routes-h">
+          <div class="section__head">
+            <h2 id="routes-h">Routes: all JSON, all under <code>/auth</code></h2>
+            <p>
+              Every POST and PUT must carry an allowed <code>Origin</code> (or
+              <code>Sec-Fetch-Site: same-origin</code>), or it gets a 403 before any route
+              runs.
+            </p>
+          </div>
+
+          <div class="table-wrap">
+            <table class="routes">
+              <caption class="visually-hidden">The routes createAuth serves, and which need step-up</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Route</th>
+                  <th scope="col">Does</th>
+                  <th scope="col">Needs</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">GET config</th><td><code>{ email, turnstileSiteKey }</code>: whether to offer recovery by email</td><td></td></tr>
+                <tr><th scope="row">GET session</th><td>The signed-in account</td><td>session</td></tr>
+                <tr><th scope="row">POST register-options → register-verify</th><td>Create an account and sign in</td><td></td></tr>
+                <tr><th scope="row">POST login-options → login-verify</th><td>Sign in, no username</td><td></td></tr>
+                <tr><th scope="row">POST reauth-options → reauth-verify</th><td>Step-up: confirm with one of this account's passkeys</td><td>session</td></tr>
+                <tr><th scope="row">GET passkeys</th><td>The account's passkeys, without key material</td><td>session</td></tr>
+                <tr><th scope="row">POST passkey-options → passkey-verify</th><td>Add a passkey</td><td><span class="chip">step-up</span></td></tr>
+                <tr><th scope="row">POST passkey-delete</th><td>Remove one, never the last</td><td><span class="chip">step-up</span></td></tr>
+                <tr><th scope="row">POST recover-start → recover-verify</th><td>Recovery by emailed code</td><td></td></tr>
+                <tr><th scope="row">POST email-start → email-verify</th><td>Set the recovery email</td><td><span class="chip">step-up</span></td></tr>
+                <tr><th scope="row">PUT profile</th><td>Name, and a partial profile update</td><td>session</td></tr>
+                <tr><th scope="row">POST logout, POST logout-others</th><td>Sign out here, or everywhere else</td><td>session</td></tr>
+                <tr><th scope="row">POST delete-account</th><td>Runs <code>onDeleteAccount</code>, then removes the account</td><td><span class="chip">step-up</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="step-up" aria-labelledby="step-h">
+          <div class="section__head">
+            <h2 id="step-h">A cookie is a session, not the person</h2>
+            <p>
+              A stolen cookie or an unlocked phone left on a table is signed in. Step-up is
+              what stops it from deleting the account, taking over the recovery email, or
+              adding a passkey of its own.
+            </p>
+          </div>
+
+          <div class="split">
+            <ol class="flow">
+              <li><span>Every session records when it last proved its user: at sign-up, sign-in, recovery, and each step-up.</span></li>
+              <li><span>The four sensitive routes check that moment against <code>reauthWindowMs</code> (5 minutes). Too old, and they answer <code>403 { reauth: true }</code>, before any effect.</span></li>
+              <li><span>The client's sensitive calls catch that, run <code>reauth-options</code> → passkey prompt → <code>reauth-verify</code>, and retry once. The prompt only offers this account's passkeys, and the challenge is bound to it.</span></li>
+              <li><span>Because the gate runs before anything changes, the single retry is safe. Callers never see the 403.</span></li>
+            </ol>
+
+            <div>
+              <p class="aside-p">
+                <strong>Just after recovery</strong> the account has no passkeys left to
+                confirm with, so the emailed code counts: the recovered session is fresh for
+                the window, which is the time it has to add one. After that, adding a
+                passkey means recovering by email again.
+              </p>
+              <p class="aside-p">
+                <strong>Your own sensitive routes</strong> can do the same.
+                <code>auth.session(req)</code> returns <code>verifiedAt</code>; answer
+                <code>403 { reauth: true }</code> when it's too old, and on the client call
+                <code>auth.reauth()</code> and retry.
+              </p>
+              <pre><code><span class="tok-k">const</span> s = <span class="tok-k">await</span> auth.<span class="tok-f">session</span>(req);
+<span class="tok-k">if</span> (!s) <span class="tok-k">return</span> Response.<span class="tok-f">json</span>({ error: <span class="tok-s">"Sign in"</span> }, { status: <span class="tok-s">401</span> });
+<span class="tok-k">if</span> (Date.<span class="tok-f">now</span>() - s.verifiedAt &gt; <span class="tok-s">5 * 60_000</span>)
+  <span class="tok-k">return</span> Response.<span class="tok-f">json</span>({ reauth: <span class="tok-k">true</span> }, { status: <span class="tok-s">403</span> });</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <section id="recovery" aria-labelledby="rec-h">
+          <div class="section__head">
+            <h2 id="rec-h">Lost every device? An emailed code</h2>
+            <p>
+              An optional, verified recovery email gets someone back in after losing every
+              device. Leave <code>sendCode</code> out and recovery is off: then it means a
+              second passkey on another device, or a synced one.
+            </p>
+          </div>
+
+          <div class="split">
+            <div>
+              <ul class="limits limits--yes">
+                <li><span><b>Six digits, 10 minutes.</b> Rejection-sampled so every code is equally likely; stored only as <code>SHA-256(purpose:email:code)</code>.</span></li>
+                <li><span><b>5 guesses a code.</b> Then the code is dead.</span></li>
+                <li><span><b>10 wrong guesses a day per email</b>, across every code sent to it, so asking for a new one doesn't reset the count.</span></li>
+                <li><span><b>1,000 wrong guesses a day across every email.</b> About one chance in a thousand a day of any account falling to guessing, at an attacker's full effort.</span></li>
+                <li><span><b>5 codes an hour per email</b>, whoever asks for them.</span></li>
+                <li><span><b>Recovering is a reset.</b> Every session is signed out and every passkey revoked, including the one on a stolen phone. The client adds a fresh passkey next.</span></li>
+                <li><span><b>Same answer either way.</b> <code>recover-start</code> says <code>{ ok: true }</code> whether or not the email has an account, and with <code>waitUntil</code> the lookup and the send happen after the response.</span></li>
+              </ul>
+            </div>
+
+            <div aria-labelledby="caps-h">
+              <h3 id="caps-h" class="caps-title">The caps, simulated in this page</h3>
+              <div class="demo caps">
+                <div class="demo__head">
+                  <span>sam@example.com</span>
+                  <span class="demo__sim">Runs in this page. Nothing is sent.</span>
+                </div>
+                <div class="demo__controls">
+                  <button type="button" class="btn" id="cap-send">Send a code</button>
+                  <button type="button" class="btn" id="cap-guess">Guess wrong</button>
+                  <button type="button" class="btn" id="cap-right">Enter the right code</button>
+                  <button type="button" class="btn btn--quiet" id="cap-reset">Next day</button>
+                </div>
+                <div class="caps__body">
+                  <div class="meter" id="m-code">
+                    <div class="meter__row"><span>Guesses on this code</span><b id="m-code-n">no code</b></div>
+                    <div class="meter__track"><div class="meter__fill"></div></div>
+                  </div>
+                  <div class="meter" id="m-day">
+                    <div class="meter__row"><span>Wrong guesses today, this email</span><b id="m-day-n">0 / 10</b></div>
+                    <div class="meter__track"><div class="meter__fill"></div></div>
+                  </div>
+                  <div class="meter" id="m-hour">
+                    <div class="meter__row"><span>Codes this hour, this email</span><b id="m-hour-n">0 / 5</b></div>
+                    <div class="meter__track"><div class="meter__fill"></div></div>
+                  </div>
+                  <p class="caps__out" id="cap-out" aria-live="polite">
+                    Send a code, then try to guess it. The server's answer to a wrong guess,
+                    an expired code and a locked email is the same sentence.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="security" aria-labelledby="sec-h">
+          <div class="section__head">
+            <h2 id="sec-h">What it defends, and what it doesn't do</h2>
+          </div>
+
+          <div class="sec-cols">
+            <div>
+              <h3>Defends against</h3>
+              <ul class="limits limits--yes">
+                <li><span><b>A stolen database.</b> It holds only hashes of session tokens and codes, plus passkey <em>public</em> keys. None of them is a credential.</span></li>
+                <li><span><b>Phishing.</b> Passkeys are bound to your domain by the browser. There's no password to type into the wrong site.</span></li>
+                <li><span><b>A stolen cookie or a borrowed, unlocked phone.</b> Step-up stops it deleting the account, taking the recovery email, or adding its own passkey.</span></li>
+                <li><span><b>A stolen phone.</b> Recover by email on another device: every session signed out, every passkey revoked.</span></li>
+                <li><span><b>Guessing codes.</b> 5 a code, 10 a day per email, 1,000 a day in all.</span></li>
+                <li><span><b>Learning who has an account.</b> Recovery and email verification answer the same way, at the same speed, either way.</span></li>
+                <li><span><b>CSRF.</b> <code>SameSite=Lax</code>, and every POST must carry an allowed <code>Origin</code>.</span></li>
+                <li><span><b>Bots signing up.</b> Per-IP rate limits, optional Turnstile, and <code>allowSignup</code>.</span></li>
+              </ul>
+            </div>
+            <div>
+              <h3>Doesn't do</h3>
+              <ul class="limits limits--no">
+                <li><span><b>Organisations, roles or invitations.</b> It knows accounts, not tenants. Keep those in your app, keyed by account id; use <code>allowSignup</code> for invites.</span></li>
+                <li><span><b>OAuth, social login or passwords.</b> Deliberately.</span></li>
+                <li><span><b>Protect a weak inbox.</b> The email account is the recovery factor: whoever controls it can recover the account.</span></li>
+                <li><span><b>Stop a stranger pausing recovery.</b> Ten wrong guesses lock one email's recovery for a day, and a flood locks everyone's. Rate limits and Turnstile keep that expensive; it's the trade for codes that can't be brute-forced.</span></li>
+                <li><span><b>Guard the profile.</b> It's the user's to write. A plan or a role belongs in your own storage, or gets refused in <code>parseProfile</code>.</span></li>
+                <li><span><b>Scale without limit.</b> One Durable Object serves every account, and <code>auth.session(req)</code> is a round trip to it. Plenty for thousands of active users; past that, cache the session in your Worker for a few seconds.</span></li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="escape">
+            <p>
+              Need orgs, SSO, social login or a hosted UI? Use something built for that.
+              <a href="vs.html">Read the honest comparison with Cloudflare Access, Better Auth,
+              Clerk, Auth0 and Lucia</a>. Found a hole?
+              <a href="https://github.com/isaacrowntree/durable-auth/security/advisories/new">Report it privately</a>.
+            </p>
+          </div>
+        </section>
+
+        <section id="tests" aria-labelledby="tests-h">
+          <div class="section__head">
+            <h2 id="tests-h">Real passkeys, real Durable Object</h2>
+          </div>
+
+          <div class="table-wrap">
+            <table class="suites">
+              <caption class="visually-hidden">The three test suites, how to run each, and what each one proves</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Suite</th>
+                  <th scope="col">Run it</th>
+                  <th scope="col">What it proves</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Unit</th>
+                  <td><code>npm test</code></td>
+                  <td>The store on Node's <code>node:sqlite</code>, and every route against it, with the passkey cryptography stubbed.</td>
+                </tr>
+                <tr>
+                  <th scope="row">Integration</th>
+                  <td><code>npm run test:integration</code></td>
+                  <td>The real Durable Object on workerd's own SQLite, via <code>@cloudflare/vitest-plugin</code>: BLOBs, NULL bindings, the schema ALTERs, RPC.</td>
+                </tr>
+                <tr>
+                  <th scope="row">End-to-end</th>
+                  <td><code>npm run test:e2e</code></td>
+                  <td>The example app in Chromium with Chrome's virtual authenticator, one per device, so the WebAuthn is real. The journeys are below.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <ul class="journeys" aria-label="The end-to-end journeys">
+            <li>a passkey is the whole login: sign up, stay signed in, sign out, sign back in</li>
+            <li>a lost device: back in by email on a new one, and the lost one is locked out</li>
+            <li>a recovery email for an address nobody uses looks exactly the same</li>
+            <li>deleting the account asks for the passkey again once the session is stale</li>
+            <li>the only passkey can't be removed</li>
+            <li>signing out other devices keeps this one</li>
+          </ul>
+        </section>
+
+        <section id="related" aria-labelledby="rel-h">
+          <div class="section__head">
+            <h2 id="rel-h">Siblings and source</h2>
+          </div>
+
+          <div class="family">
+            <div class="kin kin--auth" aria-current="page">
+              <h3>durable-auth</h3>
+              <p>Passkey sign-in for Workers, kept in one Durable Object. You're reading it.</p>
+            </div>
+            <div class="kin kin--sync">
+              <h3><a href="https://isaacrowntree.com/durable-sync/">durable-sync</a></h3>
+              <p>
+                Offline-first sync for Durable Objects: an op log on the server, a durable
+                outbox on the client. It deliberately has no auth; this is the auth.
+              </p>
+            </div>
+            <div class="kin kin--app">
+              <h3><a href="https://isaacrowntree.github.io/rampset/">Rampset</a></h3>
+              <p>
+                The offline-first barbell app both libraries were extracted from, and where
+                they run in production. <a href="https://liftlog.zackdesign.biz">Try it</a>.
+              </p>
+            </div>
+          </div>
+
+          <div class="rows rows--gap">
+            <div class="rows__row">
+              <a class="rows__name" href="https://zackdesign.biz/durable-auth/">The write-up</a>
+              <p class="rows__note">Why it's built this way, at more length.</p>
+            </div>
+            <div class="rows__row">
+              <a class="rows__name" href="https://simplewebauthn.dev">SimpleWebAuthn</a>
+              <p class="rows__note">Does the passkey cryptography, here and in plenty of other libraries.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="foot-wrap">
+      <div class="shell foot">
+        <span>MIT licence. Made by Isaac Rowntree.</span>
+        <nav aria-label="Elsewhere">
+          <a href="https://github.com/isaacrowntree/durable-auth">GitHub</a>
+          <a href="https://www.npmjs.com/package/durable-auth">npm</a>
+          <a href="vs.html">Compare</a>
+          <a href="https://isaacrowntree.com/durable-sync/">durable-sync</a>
+          <a href="https://isaacrowntree.github.io/rampset/">Rampset</a>
+          <a href="llms.txt">llms.txt</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>durable-auth vs Cloudflare Access, Better Auth, Clerk and Auth0 — an honest comparison</title>
+    <meta
+      name="description"
+      content="How durable-auth compares to Cloudflare Access, Better Auth, Clerk, Auth0 and Lucia: where your users live, passkeys, public sign-up, social login, SSO, organisations, hosted UI and cost — and when you should use one of them instead."
+    />
+    <link rel="canonical" href="https://isaacrowntree.com/durable-auth/vs.html" />
+
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="durable-auth" />
+    <meta property="og:url" content="https://isaacrowntree.com/durable-auth/vs.html" />
+    <meta property="og:title" content="durable-auth vs Cloudflare Access, Better Auth, Clerk and Auth0" />
+    <meta
+      property="og:description"
+      content="Where your users live, what each one needs running, and when you should not use durable-auth."
+    />
+    <meta property="og:image" content="https://isaacrowntree.com/durable-auth/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="durable-auth: a request log where a stale session is asked to confirm with a passkey before deleting an account, then retried."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <meta name="theme-color" content="#f7f6fb" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400..700&family=Atkinson+Hyperlegible+Next:ital,wght@0,400..800;1,400..800&display=swap"
+    />
+    <link rel="stylesheet" href="style.css" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "headline": "durable-auth vs Cloudflare Access, Better Auth, Clerk and Auth0",
+        "url": "https://isaacrowntree.com/durable-auth/vs.html",
+        "dateModified": "2026-10-19",
+        "author": { "@type": "Person", "name": "Isaac Rowntree", "url": "https://isaacrowntree.com/" },
+        "about": { "@type": "SoftwareSourceCode", "name": "durable-auth", "codeRepository": "https://github.com/isaacrowntree/durable-auth" }
+      }
+    </script>
+  </head>
+<body>
+    <header class="masthead">
+      <div class="shell masthead__inner">
+        <a class="wordmark" href="./">durable<span>-</span>auth</a>
+        <nav aria-label="Sections">
+          <a href="./#why" class="opt">Why</a>
+          <a href="./#start">Start</a>
+          <a href="./#security">Security</a>
+          <a href="https://github.com/isaacrowntree/durable-auth">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <div class="shell prose">
+        <section class="hero">
+          <h1>durable-auth vs the real auth products</h1>
+          <p class="hero__lede">
+            Most of the time, one of the others is the right answer.
+            <strong>This page is about the times it isn't.</strong>
+          </p>
+          <p class="hero__meta hero__meta--after">An honest comparison, checked 19 October 2026</p>
+        </section>
+
+        <section class="flush" aria-labelledby="axis-h">
+          <div class="section__head">
+            <h2 id="axis-h">Where do your users live?</h2>
+            <p>
+              Feature lists move every quarter. The structural question doesn't: in a
+              vendor's service, in a database you run, or in a Durable Object you already
+              deploy. durable-auth only makes sense if the answer you want is the last one
+              and you can live with passkeys and email as the only ways in.
+            </p>
+          </div>
+
+          <div class="table-wrap">
+            <table style="min-width: 62rem">
+              <caption class="visually-hidden">
+                Auth options compared by where users live, passkeys, public sign-up, social
+                login and SSO, organisations, hosted UI and free tier
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Option</th>
+                  <th scope="col">Users live in</th>
+                  <th scope="col">Passkeys</th>
+                  <th scope="col">Public sign-up</th>
+                  <th scope="col">Social / SSO</th>
+                  <th scope="col">Orgs</th>
+                  <th scope="col">Hosted UI</th>
+                  <th scope="col">Free tier</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">durable-auth</th>
+                  <td>One Durable Object's SQLite, in your account</td>
+                  <td class="yes">The only way in</td>
+                  <td class="yes">Yes, gate it with <code>allowSignup</code></td>
+                  <td class="no">Neither, deliberately</td>
+                  <td class="no">No</td>
+                  <td class="no">No — you build the screens</td>
+                  <td>MIT; your Workers bill</td>
+                </tr>
+                <tr>
+                  <th scope="row">Cloudflare Access</th>
+                  <td>Your identity provider; Access sits in front and hands the app a JWT</td>
+                  <td>WebAuthn as a second factor after the IdP (Independent MFA)</td>
+                  <td class="no">No — deny by default, allowlist policies, every user a seat</td>
+                  <td class="yes">Yes — many IdPs, or an emailed one-time PIN</td>
+                  <td>Policy groups, not app tenants</td>
+                  <td class="yes">Yes</td>
+                  <td>Up to 50 users</td>
+                </tr>
+                <tr>
+                  <th scope="row">Better Auth</th>
+                  <td>Your database (D1 natively since 1.5), with its schema</td>
+                  <td class="yes">Plugin, on SimpleWebAuthn</td>
+                  <td class="yes">Yes</td>
+                  <td class="yes">Yes — social providers, SSO plugin (OIDC, SAML)</td>
+                  <td class="yes">Organization plugin</td>
+                  <td class="no">No — you build the screens</td>
+                  <td>MIT; your database bill</td>
+                </tr>
+                <tr>
+                  <th scope="row">Clerk</th>
+                  <td>Clerk's service; <code>@clerk/backend</code> runs on Workers</td>
+                  <td>Pro and Business plans, not the free one</td>
+                  <td class="yes">Yes</td>
+                  <td class="yes">Yes — SSO from Pro</td>
+                  <td class="yes">Yes, on every plan</td>
+                  <td class="yes">Yes — components and Account Portal</td>
+                  <td>50,000 retained users per app</td>
+                </tr>
+                <tr>
+                  <th scope="row">Auth0</th>
+                  <td>Auth0's service</td>
+                  <td class="yes">Yes, including the free plan</td>
+                  <td class="yes">Yes</td>
+                  <td class="yes">Yes — social, and one enterprise connection free</td>
+                  <td class="yes">Organizations (5 free)</td>
+                  <td class="yes">Yes — Universal Login</td>
+                  <td>25,000 monthly active users</td>
+                </tr>
+                <tr>
+                  <th scope="row">Lucia <em>(deprecated)</em></th>
+                  <td colspan="7">
+                    Deprecated in March 2025. The site now holds what you need to replace
+                    Lucia v3 and points to its author's <em>Auth Book</em>, a guide to
+                    implementing auth yourself, which includes a passkey-plus-email-code
+                    example close to this library's design.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="fine">
+            Checked against each project's own docs and pricing pages on 19 October 2026
+            (sources below). These products move fast and this page is written by someone
+            with an obvious interest — if a cell is wrong or out of date,
+            <a href="https://github.com/isaacrowntree/durable-auth/issues">open an issue</a>
+            and it gets fixed. Plan limits in particular change; follow the links.
+          </p>
+        </section>
+
+        <section aria-labelledby="use-h">
+          <div class="section__head">
+            <h2 id="use-h">Which one should you use?</h2>
+          </div>
+
+          <h3>Use Cloudflare Access if…</h3>
+          <p>
+            The people signing in are a team you can list: staff, contractors, a beta
+            group. It's deny-by-default, it works in front of any app without code, it
+            speaks to the identity provider you already have, and it's free up to 50
+            users. It's the wrong shape for an app strangers sign up to, because every
+            user is a seat on an allowlist — which is why this library exists. (Its
+            documented WebAuthn support is a second factor after the identity provider;
+            a passkeys identity-provider type appears in the API reference, but not yet in
+            a setup guide.)
+          </p>
+
+          <h3>Use Better Auth if…</h3>
+          <p>
+            You want a library rather than a vendor, and you need more than passkeys:
+            email and password, social login, two-factor, organisations, SAML or OIDC SSO.
+            It does all of that, it's MIT, its passkey plugin uses the same SimpleWebAuthn
+            underneath, and since 1.5 it takes a D1 binding directly. The cost on Workers is
+            a database schema and migrations to own, and the <code>nodejs_compat</code>
+            flag. If you'll ever need organisations or SSO, start here rather than
+            outgrowing durable-auth later.
+          </p>
+
+          <h3>Use Clerk or Auth0 if…</h3>
+          <p>
+            You'd rather pay than own sign-in. Both give you hosted, polished UI, social
+            login, organisations, enterprise SSO, account management, compliance paperwork
+            and a team on call — none of which durable-auth has, and some of which you will
+            need the moment you sell to a company. Auth0's free plan includes passkeys and
+            25,000 monthly active users; Clerk's free plan covers 50,000 retained users per
+            app, but passkeys need its Pro plan. The trade is that your users live in their
+            service, and the bill grows with them.
+          </p>
+
+          <h3>Read the Auth Book if…</h3>
+          <p>
+            You want to understand what any of these do, or write your own. Lucia's author
+            replaced the library with a guide, and it is the best free explanation of
+            sessions, passkeys and email codes there is. Reading it is a good way to audit
+            this library, too.
+          </p>
+
+          <h3>Use durable-auth if…</h3>
+          <p>
+            You're all-Cloudflare, your app is open to the public, and passkeys plus an
+            optional recovery email are all the ways in you want. Then a Durable Object
+            already gives you the hard part — one thing at a time, with its own SQLite — and
+            what's left is the routes, the ceremonies and the caps. That's this package:
+            no vendor, no database to provision, no schema to migrate by hand, and nothing
+            in a dashboard.
+          </p>
+        </section>
+
+        <section aria-labelledby="honest-h">
+          <div class="section__head">
+            <h2 id="honest-h">What you give up</h2>
+            <p>
+              No organisations, roles or invitations. No social login, SSO or passwords. No
+              hosted UI: you write the sign-in screen. No admin dashboard to look a user up
+              in. Its maturity is one production app and a test suite, not years and a
+              security team. The recovery email is the recovery factor, and the guess caps
+              that protect codes can be spent by a stranger to pause recovery. And one
+              Durable Object serves every account — plenty for thousands of active users,
+              not a design for millions.
+            </p>
+            <p>
+              <a href="./#security">The full security model, including what it doesn't do</a>
+            </p>
+          </div>
+        </section>
+
+        <section aria-labelledby="src-h">
+          <div class="section__head">
+            <h2 id="src-h">Checked against</h2>
+          </div>
+
+          <h3>Cloudflare Access</h3>
+          <ul class="sources">
+            <li><a href="https://developers.cloudflare.com/cloudflare-one/access-controls/policies/">Access policies</a> — deny by default; allow by email, domain or group</li>
+            <li><a href="https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/">One-time PIN</a> — emailed only to users an Access policy allows</li>
+            <li><a href="https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/independent-mfa/">Independent MFA</a> — security keys, platform authenticators and TOTP after the IdP</li>
+            <li><a href="https://developers.cloudflare.com/cloudflare-one/identity/authorization-cookie/validating-json/">Validating the Access JWT</a> — <code>Cf-Access-Jwt-Assertion</code></li>
+            <li><a href="https://www.cloudflare.com/plans/">Cloudflare plans</a> (Zero Trust) — free for under 50 users</li>
+          </ul>
+
+          <h3>Better Auth</h3>
+          <ul class="sources">
+            <li><a href="https://www.better-auth.com/docs/plugins/passkey">Passkey plugin</a> — powered by SimpleWebAuthn</li>
+            <li><a href="https://better-auth.com/blog/1-5">Better Auth 1.5</a> — pass a D1 binding directly</li>
+            <li><a href="https://www.better-auth.com/docs/concepts/database">Database</a> and <a href="https://www.better-auth.com/docs/concepts/cli">CLI</a> — schema generation and migrations</li>
+            <li><a href="https://www.better-auth.com/docs/integrations/hono">Hono / Workers</a> — <code>nodejs_compat</code></li>
+            <li><a href="https://www.better-auth.com/docs/plugins/organization">Organization</a>, <a href="https://www.better-auth.com/docs/plugins/sso">SSO</a>, <a href="https://www.better-auth.com/docs/plugins/2fa">2FA</a>, <a href="https://www.better-auth.com/docs/concepts/oauth">social providers</a></li>
+          </ul>
+
+          <h3>Clerk</h3>
+          <ul class="sources">
+            <li><a href="https://clerk.com/pricing">Pricing</a> — 50,000 retained users per app free; passkeys and SSO on Pro and above; organisations on every plan</li>
+            <li><a href="https://clerk.com/docs/guides/account-portal/overview">Account Portal</a> — hosted sign-in, sign-up and profile pages</li>
+            <li><a href="https://clerk.com/docs/guides/development/sdk-development/backend-only"><code>@clerk/backend</code></a> — built for V8 isolates including Workers</li>
+          </ul>
+
+          <h3>Auth0</h3>
+          <ul class="sources">
+            <li><a href="https://auth0.com/pricing">Pricing</a> — free up to 25,000 MAU, with passkeys, 5 organizations and 1 enterprise connection</li>
+            <li><a href="https://auth0.com/docs/authenticate/database-connections/passkeys">Passkeys</a> and <a href="https://auth0.com/docs/authenticate/login/auth0-universal-login">Universal Login</a></li>
+            <li><a href="https://auth0.com/docs/manage-users/organizations">Organizations</a></li>
+          </ul>
+
+          <h3>Lucia</h3>
+          <ul class="sources">
+            <li><a href="https://lucia-auth.com/">lucia-auth.com</a> — "Lucia was deprecated in March 2025"</li>
+            <li><a href="https://github.com/lucia-auth/lucia/discussions/1707">The deprecation announcement</a> (October 2024)</li>
+            <li><a href="https://auth.pilcrowonpaper.com/passkeys">The Auth Book: passkeys</a></li>
+          </ul>
+        </section>
+      </div>
+      <aside class="shell family-wrap" aria-labelledby="family-h">
+        <h2 id="family-h">From the same app</h2>
+        <div class="family">
+          <div class="kin kin--auth" aria-current="page">
+            <h3><a href="./">durable-auth</a></h3>
+            <p>Passkey sign-in for Workers, kept in one Durable Object.</p>
+          </div>
+          <div class="kin kin--sync">
+            <h3><a href="https://isaacrowntree.com/durable-sync/">durable-sync</a></h3>
+            <p>Offline-first sync: an op log on the server, a durable outbox on the client.</p>
+          </div>
+          <div class="kin kin--app">
+            <h3><a href="https://isaacrowntree.github.io/rampset/">Rampset</a></h3>
+            <p>The offline-first barbell app both libraries were extracted from, and where they run in production. <a href="https://liftlog.zackdesign.biz">Try it</a>.</p>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="foot-wrap">
+      <div class="shell foot">
+        <span>MIT licence. Made by Isaac Rowntree.</span>
+        <nav aria-label="Elsewhere">
+          <a href="./">Home</a>
+          <a href="https://github.com/isaacrowntree/durable-auth">GitHub</a>
+          <a href="https://www.npmjs.com/package/durable-auth">npm</a>
+          <a href="https://isaacrowntree.com/durable-sync/">durable-sync</a>
+          <a href="https://isaacrowntree.github.io/rampset/">Rampset</a>
+          <a href="llms.txt">llms.txt</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <!-- durable-auth: the step-up, on security paper. A stale session is asked
+       to confirm with a passkey before deleting the account, then retried. -->
+  <defs>
+    <pattern id="guilloche" width="120" height="36" patternUnits="userSpaceOnUse">
+      <g fill="none" stroke="#bfb2ec" stroke-width="0.9">
+        <path d="M0 18C20 0 40 0 60 18S100 36 120 18"/>
+        <path d="M0 18C20 36 40 36 60 18S100 0 120 18"/>
+        <path d="M-30 18C-10 4 10 4 30 18S70 32 90 18 130 4 150 18"/>
+        <path d="M-30 18C-10 32 10 32 30 18S70 4 90 18 130 32 150 18"/>
+        <path d="M0 6C30 14 30 22 60 30S90 6 120 6" opacity=".6"/>
+      </g>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="#f7f6fb"/>
+
+  <!-- wordmark -->
+  <text x="72" y="92" font-family="Atkinson Hyperlegible Mono, Menlo, monospace" font-size="26" font-weight="700" fill="#1c2230">durable<tspan fill="#5a3fc0">-</tspan>auth</text>
+
+  <!-- headline -->
+  <text font-family="Atkinson Hyperlegible Next, Helvetica Neue, Helvetica, sans-serif" font-weight="800" fill="#1c2230" letter-spacing="-2">
+    <tspan x="68" y="200" font-size="66">Passkey sign-in for</tspan>
+    <tspan x="68" y="274" font-size="66">Cloudflare Workers</tspan>
+  </text>
+  <text x="72" y="330" font-family="Atkinson Hyperlegible Next, Helvetica Neue, Helvetica, sans-serif" font-size="26" fill="#4f5466">Kept in one Durable Object. No auth service, no user database.</text>
+
+  <!-- the console on security paper -->
+  <rect x="72" y="372" width="1056" height="258" fill="#ffffff" stroke="#c8c4d8"/>
+  <rect x="73" y="373" width="1054" height="257" fill="url(#guilloche)"/>
+
+  <g font-family="Atkinson Hyperlegible Mono, Menlo, monospace" font-size="20">
+    <rect x="88" y="390" width="636" height="38" rx="3" fill="#ffffff" fill-opacity="0.9"/>
+    <rect x="88" y="390" width="4" height="38" fill="#9a4f08"/>
+    <text x="104" y="416"><tspan fill="#4f5466">POST</tspan><tspan x="174" fill="#1c2230">/auth/delete-account</tspan><tspan x="440" fill="#9a4f08" font-size="17">{ reauth: true }</tspan><tspan x="708" text-anchor="end" font-weight="700" fill="#9a4f08">403</tspan></text>
+    <rect x="88" y="436" width="636" height="38" rx="3" fill="#ffffff" fill-opacity="0.9"/>
+    <text x="104" y="462"><tspan fill="#4f5466">POST</tspan><tspan x="174" fill="#1c2230">/auth/reauth-options</tspan><tspan x="708" text-anchor="end" font-weight="700" fill="#1a6b45">200</tspan></text>
+    <rect x="88" y="482" width="636" height="38" rx="3" fill="#ffffff" fill-opacity="0.9"/>
+    <text x="104" y="508"><tspan fill="#4f5466">POST</tspan><tspan x="174" fill="#1c2230">/auth/reauth-verify</tspan><tspan x="708" text-anchor="end" font-weight="700" fill="#1a6b45">200</tspan></text>
+    <rect x="88" y="528" width="636" height="38" rx="3" fill="#ffffff" fill-opacity="0.9"/>
+    <text x="104" y="554"><tspan fill="#4f5466">POST</tspan><tspan x="174" fill="#1c2230">/auth/delete-account</tspan><tspan x="708" text-anchor="end" font-weight="700" fill="#1a6b45">200</tspan></text>
+  </g>
+
+  <!-- the passkey sheet -->
+  <rect x="762" y="396" width="344" height="200" rx="22" fill="#ffffff" stroke="#c8c4d8"/>
+  <g transform="translate(910 414) scale(2)" fill="none" stroke="#5a3fc0" stroke-width="1.5" stroke-linecap="round">
+    <path d="M12 11v3.5M8.5 9.5a3.5 3.5 0 0 1 7 0v1.5c0 2.5-.6 4.6-1.6 6.3M8.5 12c0 2.4-.6 4.5-1.6 6.1"/>
+    <path d="M5.5 8.5a7 7 0 0 1 13 0M4.5 12.5c0 1.6-.3 3.1-.8 4.4M19.5 12.5c0 2.3-.4 4.4-1.2 6.2"/>
+  </g>
+  <text x="934" y="498" text-anchor="middle" font-family="Atkinson Hyperlegible Next, Helvetica, sans-serif" font-size="26" font-weight="800" fill="#1c2230">Confirm it's you</text>
+  <rect x="859" y="522" width="150" height="46" rx="9" fill="#5a3fc0"/>
+  <text x="934" y="552" text-anchor="middle" font-family="Atkinson Hyperlegible Next, Helvetica, sans-serif" font-size="19" font-weight="700" fill="#ffffff">Use passkey</text>
+</svg>

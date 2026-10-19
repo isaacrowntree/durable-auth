@@ -1,0 +1,92 @@
+# durable-auth
+
+> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.1.0.
+
+durable-auth is small on purpose: one Durable Object, about 1,500 lines of TypeScript, and SimpleWebAuthn (`@simplewebauthn/server` and `@simplewebauthn/browser`, its only dependencies) for the passkey cryptography. A Durable Object runs one request at a time with its own SQLite, so "check this code, then burn it" and "check this challenge, then consume it" are atomic without transactions, and "this email belongs to one account" is a plain UNIQUE constraint. Every account lives in ONE instance (`idFromName("auth")`).
+
+Install: `npm i durable-auth`. Two entry points: `durable-auth/server` and `durable-auth/client`.
+
+## Server API (`durable-auth/server`)
+
+- `AuthDurableObject` — extend and export from your Worker: `export class Auth extends AuthDurableObject {}`. Bind it in wrangler with `new_sqlite_classes: ["Auth"]`. It exposes one RPC method that dispatches onto an `AuthStore`; a daily alarm sweeps expired challenges, sessions and codes.
+- `createAuth(options)` → `{ handle(req), session(req), account(req) }`.
+  - `handle(req)` → `Response` for any path under `basePath`, else `null`.
+  - `session(req)` → `{ userId, tokenHash, verifiedAt } | null` — use it to guard your own routes; `verifiedAt` is when the session last proved its user.
+  - `account(req)` → `{ id, name, email, profile } | null`.
+- Options (only `store` and `rpName` required):
+  - `store` — the Durable Object namespace (e.g. `env.AUTH`).
+  - `rpName` — shown in the passkey prompt.
+  - `basePath` — default `"/auth"`; routes at `<basePath>/<action>`.
+  - `cookieName` — default `"session"`; `__Host-` prefix and `Secure` added except on plain-http localhost.
+  - `rpID` — default the request hostname; set to share passkeys across subdomains.
+  - `origins` — default the request origin; allowed for passkeys and for POSTs.
+  - `parseProfile(input, current, patch)` — validate app account data; default any JSON object ≤ 4 KB; throw `AuthInputError` to refuse with a 400.
+  - `allowSignup(req, { name, body })` — default everyone; return false to refuse (invites, waitlist, domain).
+  - `sendCode(to, code, purpose)` — default off (then email recovery is off). `cloudflareEmail(env.EMAIL, { from, appName })` is one.
+  - `turnstile` — `{ siteKey, verify: turnstileVerifier(secret) }`, on sign-up and recovery.
+  - `rateLimit(key)` → `Promise<boolean>`; keys look like `login:<ip>`. `rateLimitBinding(env.AUTH_LIMITER)` is one (fails open).
+  - `onDeleteAccount(userId)` — remove the app's own data before the account goes; if it throws, the account survives.
+  - `waitUntil(work)` — pass `ctx.waitUntil`; without it recovery sends before answering and leaks timing.
+  - `reauthWindowMs` — default 5 minutes; how recent a passkey (or emailed code) must be for step-up.
+  - `maxNameLength` — default 64.
+- Also exported: `AuthInputError`, `AuthStore`, `authStoreFrom`, `asyncStore` (tests), `normalizeEmail`, `SCHEMA_VERSION`, `cloudflareEmail`, `turnstileVerifier`, `rateLimitBinding`.
+
+## Routes (all JSON, under basePath)
+
+Every POST/PUT must carry an allowed `Origin` (or `Sec-Fetch-Site: same-origin`).
+
+- `GET config` → `{ email, turnstileSiteKey }`
+- `GET session` → the signed-in account
+- `POST register-options` → `POST register-verify` — create an account, signed in
+- `POST login-options` → `POST login-verify` — sign in, no username (discoverable passkeys)
+- `POST reauth-options` → `POST reauth-verify` — step-up
+- `GET passkeys` — the account's passkeys, no key material
+- `POST passkey-options` → `POST passkey-verify` — add a passkey [step-up]
+- `POST passkey-delete` — remove one, never the last [step-up]
+- `POST recover-start` → `POST recover-verify` — recovery by emailed code
+- `POST email-start` → `POST email-verify` — set the recovery email [step-up]
+- `PUT profile` — name, and a partial profile update
+- `POST logout`, `POST logout-others`
+- `POST delete-account` [step-up]
+
+Step-up: a session whose `verifiedAt` is older than `reauthWindowMs` gets `403 { error, reauth: true }` from the four gated routes, checked before any effect. Sessions are fresh on sign-up, sign-in, recovery and after `reauth-verify`. After recovery the account has no passkeys, so the recovered session's freshness is the window it has to add one.
+
+## Client API (`durable-auth/client`)
+
+- `createAuthClient({ basePath?, timeoutMs? })` — defaults `"/auth"`, 15 s. Returns:
+  `config()`, `session()` (→ `Account | null` signed out `| undefined` offline), `register(name, profile?, turnstileToken?)`, `signIn()`, `signOut()`, `signOutOtherDevices()`, `reauth()`, `addPasskey()`, `passkeys()`, `removePasskey(id)`, `startRecovery(email, turnstileToken?)`, `finishRecovery(email, code)`, `startEmailVerification(email)`, `finishEmailVerification(email, code)`, `updateProfile({ name?, profile? })`, `deleteAccount()`.
+- `deleteAccount`, `startEmailVerification`, `addPasskey` and `removePasskey` handle step-up themselves: on `403 { reauth: true }` they run the passkey ceremony and retry once.
+- Every call returns what it promised or throws `AuthError` (`message` fit to show, `status`, `kind?: "cancelled" | "already-registered"`).
+- `authErrorMessage(e, fallback)` → string, or `null` when the user dismissed the passkey prompt.
+- `passkeysSupported()` → boolean.
+
+## Recovery and its caps
+
+- Six-digit codes, rejection-sampled, stored as `SHA-256(purpose:email:code)`, 10-minute expiry.
+- 5 guesses a code; 10 wrong guesses a day per email (across codes); 1,000 wrong guesses a day across all emails; 5 codes an hour per email. About one chance in a thousand a day of any account falling to guessing.
+- `recover-verify` signs every session out and revokes every passkey, then signs in here; call `addPasskey()` next.
+- `recover-start` answers `{ ok: true }` whether or not the email has an account; with `waitUntil` the lookup and send happen after the response. Adding someone else's email answers the same way and sends nothing.
+- Changing the recovery email retires codes sent to the old one.
+
+## Security model
+
+- Stored: hashes of 256-bit session tokens and of codes, passkey public keys. No credentials.
+- Sessions: `HttpOnly`, `SameSite=Lax`, `__Host-` cookie; sliding one-year expiry.
+- Passkeys: `userVerification: "required"`; challenges single-use, bound to purpose and (registration, add-passkey, step-up) account.
+- Does NOT do: organisations, roles or invitations; OAuth, social login, SSO or passwords; hosted UI. The email inbox is the recovery factor. A stranger can spend the guess caps to pause recovery. The profile is user-writable — keep roles/plans out of it or refuse them in `parseProfile`. One Durable Object serves every account: fine for thousands of active users; past that, cache `auth.session(req)` for a few seconds.
+
+## Tests
+
+- Unit (`npm test`): the store on Node's node:sqlite, and every route against it, with the passkey cryptography stubbed.
+- Integration (`npm run test:integration`): the real Durable Object on workerd's own SQLite via @cloudflare/vitest-plugin — BLOBs, NULL bindings, the schema ALTERs, RPC.
+- End-to-end (`npm run test:e2e`): the example app in Chromium with Chrome's virtual authenticator, so the WebAuthn is real — sign up, recover a lost device and check it's locked out, step-up before delete, and more.
+
+## Links
+
+- Docs: https://isaacrowntree.com/durable-auth/
+- Comparison vs Cloudflare Access, Better Auth, Clerk, Auth0, Lucia: https://isaacrowntree.com/durable-auth/vs.html
+- Source: https://github.com/isaacrowntree/durable-auth
+- npm: https://www.npmjs.com/package/durable-auth
+- Write-up: https://zackdesign.biz/durable-auth/
+- Sibling library, offline-first sync: https://isaacrowntree.com/durable-sync/
+- In production: Rampset, https://liftlog.zackdesign.biz
