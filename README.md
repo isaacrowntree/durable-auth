@@ -4,9 +4,18 @@
 Accounts, passkeys, sessions and email recovery in the Durable Object's own
 SQLite. No auth service, no user database, nothing to configure in a dashboard.
 
+[![npm](https://img.shields.io/npm/v/durable-auth?color=cb3837&logo=npm)](https://www.npmjs.com/package/durable-auth)
+[![ci](https://github.com/isaacrowntree/durable-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/isaacrowntree/durable-auth/actions/workflows/ci.yml)
+[![codeql](https://github.com/isaacrowntree/durable-auth/actions/workflows/codeql.yml/badge.svg)](https://github.com/isaacrowntree/durable-auth/actions/workflows/codeql.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ```
 npm i durable-auth
 ```
+
+**[Docs →](https://isaacrowntree.com/durable-auth/)** ·
+[vs Access, Better Auth, Clerk, Auth0](https://isaacrowntree.com/durable-auth/vs.html) ·
+[Write-up](https://zackdesign.biz/durable-auth/)
 
 Anyone can create an account with Face ID, Touch ID, Windows Hello or a
 security key: no password, and no username to sign in, because the passkey says who

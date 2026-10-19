@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
       # OIDC needs npm >= 11.5.1, and Node 22 ships npm 10.9.x — so setup-node
       # alone is not enough. Without this npm never attempts OIDC at all: it

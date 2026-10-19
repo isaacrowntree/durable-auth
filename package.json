@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/isaacrowntree/durable-auth.git"
   },
-  "homepage": "https://github.com/isaacrowntree/durable-auth#readme",
+  "homepage": "https://isaacrowntree.com/durable-auth/",
   "bugs": {
     "url": "https://github.com/isaacrowntree/durable-auth/issues"
   },
@@ -62,5 +62,12 @@
     "typescript": "^7.0.2",
     "vitest": "^5.0.5",
     "wrangler": "^4.151.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
