@@ -217,6 +217,17 @@ What it doesn't do:
 
 Found a hole? See [SECURITY.md](SECURITY.md).
 
+## Related
+
+durable-auth is one of three open-source pieces that fit together:
+
+- **[Rampset](https://isaacrowntree.github.io/rampset/)** — the offline-first
+  barbell app it was extracted from, running it in production.
+  [Try it](https://liftlog.zackdesign.biz).
+- **[durable-sync](https://isaacrowntree.com/durable-sync/)** — offline-first
+  sync in a Durable Object per user. Key its journal by the account id
+  `auth.session(req)` returns.
+
 ## Run the example
 
 ```bash

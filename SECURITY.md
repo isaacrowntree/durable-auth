@@ -44,3 +44,63 @@ latest release before reporting.
   after confirming is safe.
 - Schema migrations only add, and a database is never marked older than it
   is, so rolling a deploy back and forward again is safe.
+
+## OWASP ASVS mapping
+
+Against [OWASP ASVS 5.0.0](https://github.com/OWASP/ASVS/tree/v5.0.0_release/5.0/en)
+(May 2025): V6 Authentication, V7 Session Management, and the cookie, CSRF
+and anti-automation parts of V3 and V2. The requirement summaries are ours;
+read the standard for the exact wording. "App's" means the requirement falls
+to the app using durable-auth, not to the library. Requirements on passwords
+(V6.2), identity providers (V6.8, V7.6), TOTP, SMS and push (parts of V6.5,
+V6.6) don't apply: there are none.
+
+| ASVS 5.0.0 | In short | How durable-auth meets it | Status |
+|---|---|---|---|
+| **V6 Authentication** | | | |
+| 6.1.1 (L1) | Document the brute-force and anti-automation controls, including how they avoid malicious lockout | README "Security model"; caps in `store.ts`. A stranger *can* lock one email's recovery for a day, or everyone's with a flood; that's documented as the trade, and passkey sign-in is unaffected | Partially |
+| 6.1.3, 6.3.4 (L2) | Every way in is documented, with its controls applied consistently | Two: passkey sign-in, and email-code recovery (optional, `sendCode`). Recovery is weaker than a passkey and says so ("The email account is the recovery factor") | Met |
+| 6.3.1 (L1) | Brute-force controls are in place | `AuthStore.redeemCode`: 5 guesses a code, 10 a day per email, 1,000 a day overall; `issueCode`: 5 codes an hour per email; `rateLimit` per IP per route kind | Met |
+| 6.3.2 (L1) | No default accounts | There are none | Met |
+| 6.3.3 (L2) | Multi-factor, or an equivalent combination, to get in | Passkeys with `userVerification: "required"` (a device plus its biometric or PIN) everywhere. Email recovery is a single factor | Partially |
+| 6.3.5 (L3) | Tell users about suspicious sign-in attempts | No hook for it | Not met |
+| 6.3.6 (L3) | Email is not an authentication factor | Email recovery signs in with an emailed code. Leave out `sendCode` to meet this | Not met by default |
+| 6.3.7 (L3) | Tell users when their authentication details change | No notification when a passkey is added or removed or the email changes | Not met |
+| 6.3.8 (L3) | Failed attempts don't reveal which users exist | `recover-start` and `email-start` answer the same, under the same caps and (with `waitUntil`) the same timing; there are no usernames to probe | Met |
+| 6.4.2 (L1) | No password hints or secret questions | None | Met |
+| 6.4.3 (L2) | Resetting doesn't bypass other factors | Recovery replaces the passkey by design, so it bypasses it; it then revokes every passkey and session (`recover-verify`) so a stolen device is shut out | Partially |
+| 6.4.4 (L2) | Replacing a lost factor proves identity as well as enrolment did | Sign-up proves nothing beyond a passkey; recovery needs the verified email *and* the code | Met |
+| 6.5.1 (L2) | One-time codes work once | `redeemCode` deletes on success; challenges are deleted on first sight (`consumeChallenge`). Property-tested in `store.property.test.ts` | Met |
+| 6.5.2 (L2) | Low-entropy codes stored with a salted password hash | SHA-256 salted with purpose and email (`hashCode`), not a slow password hash. The attempt caps and 10-minute life are the protection; a stolen database could brute-force a live code offline | Partially |
+| 6.5.3 (L2) | Codes come from a CSPRNG | `crypto.getRandomValues`, rejection-sampled (`sixDigitCode`) | Met |
+| 6.5.4 (L2) | Codes have at least 20 bits of entropy | Six random digits, which the standard names as sufficient | Met |
+| 6.5.5 (L2) | Out-of-band codes live 10 minutes at most | `CODE_TTL_MS` = 10 minutes | Met |
+| 6.5.6 (L3) | Any factor can be revoked if lost | `passkey-delete`; recovery revokes every passkey | Met |
+| 6.5.7 (L3) | Biometrics only alongside something you have | A biometric only unlocks the passkey on its device | Met |
+| 6.6.2 (L2) | An emailed code is bound to the request it was sent for | Bound to email, purpose and account, and replaced by any newer code; not bound to the browser that asked | Partially |
+| 6.6.3 (L2) | Emailed codes are rate limited against brute force | As 6.3.1 | Met |
+| 6.7.2 (L3) | Challenge nonces are at least 64 bits and unique | SimpleWebAuthn's 32 random bytes, single use, 5-minute life, bound to purpose and account | Met |
+| **V7 Session management** | | | |
+| 7.1.1 (L2) | Document inactivity and absolute lifetimes, and any deviation from NIST 800-63B | README: a sliding one-year session, with step-up (5 minutes) for sensitive actions instead of re-authentication. No justification against 800-63B is written down | Partially |
+| 7.1.2 (L2) | Document how many concurrent sessions are allowed | Unlimited; not stated | Partially |
+| 7.2.1 (L1) | Tokens verified by a trusted backend | `AuthStore.session` looks up the token's hash | Met |
+| 7.2.2 (L1) | Dynamically generated tokens | Random per sign-in | Met |
+| 7.2.3 (L1) | Reference tokens from a CSPRNG with 128+ bits | 256 bits (`randomToken`), stored as SHA-256 | Met |
+| 7.2.4 (L1) | New token on every authentication, the old one ended | New session on sign-in, sign-up and recovery. Step-up marks the existing session verified rather than rotating it, and signing in doesn't end a session the browser already had | Partially |
+| 7.3.1 (L2) | Inactivity timeout | A year unused (`SESSION_TTL_MS`) — long, and the app's to shorten by wrapping `auth.session()` | Partially |
+| 7.3.2 (L2) | Absolute maximum lifetime | None: a session in use slides forever | Not met |
+| 7.4.1 (L1) | A terminated session can't be used again | `logout` deletes the row; expiry deletes it on sight | Met |
+| 7.4.2 (L1) | Deleting an account ends its sessions | `delete-account` signs out everywhere first | Met |
+| 7.4.3 (L2) | Option to end other sessions after a factor changes | `logout-others`; recovery ends them all itself | Met |
+| 7.4.4 (L2) | Visible logout | The app's UI, calling the client's `signOut()` | App's |
+| 7.4.5 (L2) | Admins can end a user's (or everyone's) sessions | `deleteSessionsFor` is on the store; no admin route | App's |
+| 7.5.1 (L2) | Re-authenticate before changing email or factors | `requireFresh` on `email-start`, `passkey-options`, `passkey-delete` and `delete-account`, with a passkey (user-verified) or, just after recovery, the emailed code | Met |
+| 7.5.2 (L2) | Users can see and end their sessions | `logout-others` ends them, but there's no list to see | Partially |
+| 7.5.3 (L3) | Extra authentication before highly sensitive operations | Step-up on the library's own; the app's own can check `session.verifiedAt` | App's |
+| **V3 Web frontend, V2 business logic** | | | |
+| 3.3.1, 3.3.3 (L1, L2) | `Secure` and the `__Host-` prefix on cookies | `SessionCookie`, over HTTPS (dropped only on http://localhost) | Met |
+| 3.3.2 (L2) | `SameSite` set for the cookie's purpose | `SameSite=Lax` | Met |
+| 3.3.4 (L2) | `HttpOnly`, and the token only ever in `Set-Cookie` | Both | Met |
+| 3.5.1 (L1) | Cross-origin requests to sensitive functions are refused without relying on preflight | `sameOrigin`: an allowed `Origin`, or `Sec-Fetch-Site: same-origin` | Met |
+| 3.5.3 (L1) | Sensitive functions aren't on safe methods | Every state change is POST or PUT | Met |
+| 2.4.1 (L2) | Anti-automation against excessive calls | Store caps always; per-IP `rateLimit` and Turnstile are options, off unless configured | App's |

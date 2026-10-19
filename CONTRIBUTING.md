@@ -28,6 +28,23 @@ assertions are real WebAuthn, verified by the real library. Sent emails are
 read from `.wrangler/tmp/email/`. The step-up window is shortened to three
 seconds for this suite only.
 
+The unit suite also holds property tests (`store.property.test.ts`):
+fast-check throws random histories of codes, challenges and sessions at the
+store, checks every answer against a small model of the rules, and checks the
+caps and single-use rules hold throughout. A failure prints the shortest
+history that breaks it.
+
+Two more checks keep the unit suite honest:
+
+```bash
+npm run test:coverage   # CI runs this: every branch of auth.ts, floors elsewhere
+npm run test:mutation   # Stryker: does the suite notice when a check is broken?
+```
+
+Mutation testing takes minutes, so CI runs it weekly
+(`.github/workflows/mutation.yml`). A surviving mutant in a check, a
+comparison or a cap is a missing test; one in an error message usually isn't.
+
 Write the failing test first, and prefer the suite that would catch the bug
 in production: a change to a route wants a journey, not just a unit test.
 

@@ -45,6 +45,13 @@ describe("challenges", () => {
     store.createChallenge("c1", "login", null, 0);
     expect(store.consumeChallenge("c1", "login", CHALLENGE_TTL_MS)).toBeNull();
   });
+
+  // The constant, not just the rule: a passkey prompt left open a few
+  // minutes must still work.
+  it("last five minutes", () => {
+    store.createChallenge("c1", "login", null, 0);
+    expect(store.consumeChallenge("c1", "login", 5 * 60 * 1000 - 1)).not.toBeNull();
+  });
 });
 
 describe("accounts", () => {
@@ -69,6 +76,22 @@ describe("accounts", () => {
     expect(store.setEmail("u1", "a@example.com")).not.toBe("taken");
   });
 
+  // An address someone deleted their account to be rid of isn't kept in
+  // the rate-limit tables either.
+  it("take their email out of the code logs when deleted", () => {
+    const db = new DatabaseSync(":memory:");
+    store = new AuthStore(memorySql(db));
+    store.createAccount("u1", "A", PROFILE, 0);
+    store.setEmail("u1", "a@example.com");
+    store.issueCode("a@example.com", "recover", "u1", "real", 0);
+    store.redeemCode("a@example.com", "recover", "wrong", 1);
+    store.deleteAccount("u1");
+    const rows = (table: string) => db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE email = 'a@example.com'`).get();
+    expect(rows("code_log")).toEqual({ n: 0 });
+    expect(rows("code_failures")).toEqual({ n: 0 });
+    expect(() => store.deleteAccount("u1")).not.toThrow();
+  });
+
   it("delete everything they own in auth", () => {
     store.createAccount("u1", "A", PROFILE, 0);
     store.addPasskey({ id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0 }, 0);
@@ -91,6 +114,19 @@ describe("passkeys", () => {
     expect(key).toMatchObject({ userId: "u1", counter: 4, transports: ["internal"] });
     store.passkeyUsed("k1", 9, 5);
     expect(store.passkey("k1")!.counter).toBe(9);
+  });
+
+  it("keep what the authenticator said about backup — including no, and nothing", () => {
+    const key = { userId: "u1", publicKey: new Uint8Array([1]), counter: 0 };
+    store.addPasskey({ ...key, id: "yes", deviceType: "multiDevice", backedUp: true }, 0);
+    store.addPasskey({ ...key, id: "no", deviceType: "singleDevice", backedUp: false }, 1);
+    store.addPasskey({ ...key, id: "unsaid" }, 2);
+    expect(["yes", "no", "unsaid"].map((id) => store.passkey(id))).toMatchObject([
+      { deviceType: "multiDevice", backedUp: true },
+      { deviceType: "singleDevice", backedUp: false },
+      { deviceType: undefined, backedUp: undefined },
+    ]);
+    expect(store.passkeySummaries("u1").map((k) => k.backedUp)).toEqual([true, false, null]);
   });
 });
 
@@ -137,6 +173,12 @@ describe("codes", () => {
   it("expire", () => {
     store.issueCode("a@example.com", "recover", "u1", "hash", 0);
     expect(store.redeemCode("a@example.com", "recover", "hash", CODE_TTL_MS)).toBeNull();
+  });
+
+  // The email promises ten minutes.
+  it("last ten minutes", () => {
+    store.issueCode("a@example.com", "recover", "u1", "hash", 0);
+    expect(store.redeemCode("a@example.com", "recover", "hash", 10 * 60 * 1000 - 1)).toEqual({ userId: "u1" });
   });
 
   // Six digits is a million guesses. The cap makes it five.
@@ -201,6 +243,14 @@ describe("codes", () => {
     expect(store.issueCode("b@example.com", "recover", "u2", "other", 10)).toBe("ok");
     expect(store.issueCode("a@example.com", "recover", "u1", "later", 60 * 60 * 1000 + 10)).toBe("ok");
   });
+
+  // A code that only looks sent (someone else's email) spends the same cap,
+  // or the cap would tell the two apart.
+  it("count requests that send nothing against the same cap", () => {
+    for (let i = 0; i < CODES_PER_HOUR; i++) expect(store.noteCodeRequest("A@example.com", i)).toBe("ok");
+    expect(store.noteCodeRequest("a@example.com", 10)).toBe("rate-limited");
+    expect(store.issueCode("a@example.com", "recover", "u1", "h", 10)).toBe("rate-limited");
+  });
 });
 
 describe("passkeys an account can see", () => {
@@ -233,6 +283,21 @@ describe("step-up", () => {
 });
 
 describe("pruning", () => {
+  // The daily sweep must not hand a guesser a fresh day, or a spammer a
+  // fresh hour.
+  it("keeps the lockouts and caps still in force", () => {
+    for (let round = 0; round < 2; round++) {
+      store.issueCode("a@example.com", "recover", "u1", `real${round}`, round);
+      for (let i = 0; i < CODE_MAX_ATTEMPTS; i++) store.redeemCode("a@example.com", "recover", "wrong", round);
+    }
+    for (let i = 2; i < CODES_PER_HOUR; i++) store.issueCode("a@example.com", "recover", "u1", `real${i}`, i);
+    store.prune(10);
+    expect(store.issueCode("a@example.com", "recover", "u1", "right", 10)).toBe("rate-limited");
+    store.issueCode("a@example.com", "verify-email", "u1", "right", 2 * 60 * 60 * 1000);
+    store.prune(2 * 60 * 60 * 1000);
+    expect(store.redeemCode("a@example.com", "verify-email", "right", 2 * 60 * 60 * 1000)).toBeNull();
+  });
+
   it("drops what has expired and keeps what hasn't", () => {
     store.createChallenge("old", "login", null, 0);
     store.createSession("h-old", "u1", 0);

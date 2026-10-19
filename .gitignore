@@ -12,3 +12,6 @@ dist/
 test-results/
 playwright-report/
 examples/basic/public/app.js
+coverage/
+reports/mutation/
+.stryker-tmp/
