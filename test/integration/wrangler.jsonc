@@ -1,0 +1,16 @@
+{
+  // Config for the integration suite only — never published (see package.json
+  // `files`). The compatibility date is pinned: it must stay within the window
+  // of the workerd that @cloudflare/vitest-plugin bundles, and a date newer
+  // than the binary refuses to boot. Bump it and the plugin together.
+  "name": "auth-integration",
+  "main": "worker.ts",
+  "compatibility_date": "2026-01-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "AUTH", "class_name": "Auth" },
+      { "name": "LEGACY", "class_name": "Legacy" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Auth", "Legacy"] }]
+}

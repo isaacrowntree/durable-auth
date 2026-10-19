@@ -1,0 +1,55 @@
+name: publish
+
+# Publishes to npm via OIDC trusted publishing — no NPM_TOKEN, no secret in
+# this repo, and npm generates signed provenance automatically.
+#
+# One-time setup on npmjs.com (the package must already exist; OIDC cannot do
+# a first publish, because the trusted-publisher config lives on the package's
+# settings page):
+#   durable-auth -> Settings -> Trusted Publisher
+#     Organization or user: isaacrowntree
+#     Repository:           durable-auth
+#     Workflow filename:    publish.yml
+#     Allowed actions:      npm publish
+#
+# To release: bump the version, then push a matching tag.
+#   npm version patch && git push --follow-tags
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC — without it npm falls back to a token and fails
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # OIDC needs npm >= 11.5.1, and Node 22 ships npm 10.9.x — so setup-node
+      # alone is not enough. Without this npm never attempts OIDC at all: it
+      # falls through to an unauthenticated publish and fails with a confusing
+      # 404 rather than an auth error.
+      - run: npm install -g npm@latest
+      - run: npm --version
+      - run: npm ci
+      # Publishing an untested build is how a library loses trust once.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Refuse to publish a tag that disagrees with package.json
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag != package.json $pkg"
+            exit 1
+          fi
+        if: startsWith(github.ref, 'refs/tags/v')
+      # No NODE_AUTH_TOKEN: the OIDC token is exchanged automatically.
+      - run: npm publish --access public

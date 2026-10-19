@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>durable-auth example</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; color-scheme: light dark; }
+      fieldset { margin: 1rem 0; border-radius: 8px; }
+      input, button { font: inherit; padding: 0.4rem 0.6rem; margin: 0.2rem 0; }
+      #message:empty { display: none; }
+      #message { padding: 0.5rem; border-radius: 6px; background: color-mix(in srgb, CanvasText 10%, Canvas); }
+    </style>
+  </head>
+  <body>
+    <h1>durable-auth</h1>
+    <p id="message" role="status"></p>
+
+    <section id="signed-out" hidden>
+      <fieldset>
+        <legend>New here</legend>
+        <label>Name <input id="name" autocomplete="name" /></label>
+        <button id="register">Create account with a passkey</button>
+      </fieldset>
+      <fieldset>
+        <legend>Been here before</legend>
+        <button id="sign-in">Sign in with a passkey</button>
+      </fieldset>
+      <fieldset>
+        <legend>Lost your passkey</legend>
+        <label>Recovery email <input id="recover-email" type="email" /></label>
+        <button id="recover-start">Email me a code</button><br />
+        <label>Recovery code <input id="recover-code" inputmode="numeric" autocomplete="one-time-code" /></label>
+        <button id="recover-finish">Recover</button>
+      </fieldset>
+    </section>
+
+    <section id="signed-in" hidden>
+      <p>Signed in as <strong id="who"></strong>. Recovery email: <span id="email"></span>.</p>
+      <p>The app's own API says: <span id="hello"></span></p>
+      <fieldset>
+        <legend>Recovery email</legend>
+        <label>Email <input id="new-email" type="email" /></label>
+        <button id="email-start">Send code</button><br />
+        <label>Confirmation code <input id="email-code" inputmode="numeric" autocomplete="one-time-code" /></label>
+        <button id="email-finish">Confirm</button>
+      </fieldset>
+      <fieldset>
+        <legend>Passkeys</legend>
+        <ul id="passkeys"></ul>
+        <button id="add-passkey">Add a passkey</button>
+      </fieldset>
+      <button id="sign-out-others">Sign out other devices</button>
+      <button id="sign-out">Sign out</button>
+      <button id="delete">Delete account</button>
+    </section>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
