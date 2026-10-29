@@ -1,6 +1,6 @@
 {
   "name": "durable-auth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Passkey sign-in for Cloudflare Workers, kept in one Durable Object: accounts, sessions and email recovery, no auth service and no user database.",
   "license": "MIT",
   "author": "Isaac Rowntree",
