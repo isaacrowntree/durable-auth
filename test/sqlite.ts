@@ -12,3 +12,18 @@ export function memorySql(db = new DatabaseSync(":memory:")): Sql {
     },
   };
 }
+
+/** `ctx.storage.transactionSync`, played by node:sqlite: all of `fn` or none. */
+export function memoryTransaction(db: DatabaseSync) {
+  return <T>(fn: () => T): T => {
+    db.exec("BEGIN");
+    try {
+      const out = fn();
+      db.exec("COMMIT");
+      return out;
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  };
+}

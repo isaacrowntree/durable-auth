@@ -64,8 +64,13 @@ export interface AuthOptions<P extends Profile = Profile> {
    * a Worker secret (`openssl rand -base64 32`), at least 32 characters.
    * Changing it invalidates codes already sent, nothing else. */
   codeSecret?: string;
-  /** Cloudflare Turnstile on sign-up and recovery. See `turnstileVerifier`. */
-  turnstile?: { siteKey: string; verify: (token: string, ip: string | null) => Promise<boolean> };
+  /** Cloudflare Turnstile on sign-up and recovery. See `turnstileVerifier`.
+   * `verify` is told which form the token is for ("signup" or "recover"),
+   * so it can refuse a token solved on the other. */
+  turnstile?: {
+    siteKey: string;
+    verify: (token: string, ip: string | null, action: TurnstileAction) => Promise<boolean>;
+  };
   /** true = allowed. Keys look like "login:<ip>". See `rateLimitBinding`. */
   rateLimit?: (key: string) => Promise<boolean>;
   /** Remove what the account owns outside auth, before the account itself
@@ -147,18 +152,6 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
     return { rpID: options.rpID ?? url.hostname, origins: options.origins ?? [url.origin] };
   }
 
-  /** A state-changing request must come from our own pages. SameSite=Lax
-   * already keeps the cookie off cross-site POSTs; this refuses them outright,
-   * so nothing depends on a browser getting SameSite right. Browsers send
-   * Origin on every POST; without one, only a same-origin fetch metadata
-   * header will do. */
-  function sameOrigin(req: Request): boolean {
-    if (req.method === "GET" || req.method === "HEAD") return true;
-    const origin = req.headers.get("origin");
-    if (origin === null) return req.headers.get("sec-fetch-site") === "same-origin";
-    return relyingParty(req).origins.includes(origin);
-  }
-
   async function session(req: Request): Promise<Session | null> {
     const token = cookie.read(req);
     if (!token) return null;
@@ -192,13 +185,14 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
 
   async function limit(req: Request, bucket: string): Promise<void> {
     if (!options.rateLimit) return;
-    const ok = await options.rateLimit(`${bucket}:${clientIp(req) ?? "unknown"}`);
+    const ip = clientIp(req);
+    const ok = await options.rateLimit(`${bucket}:${ip ? rateLimitSubject(ip) : "unknown"}`);
     if (!ok) fail(429, "Too many attempts — wait a minute and try again");
   }
 
-  async function requireHuman(req: Request, token: unknown): Promise<void> {
+  async function requireHuman(req: Request, token: unknown, action: TurnstileAction): Promise<void> {
     if (!options.turnstile) return;
-    if (typeof token !== "string" || !(await options.turnstile.verify(token, clientIp(req)))) {
+    if (typeof token !== "string" || !(await options.turnstile.verify(token, clientIp(req), action))) {
       fail(400, "Couldn't confirm you're human — try again");
     }
   }
@@ -248,6 +242,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       .catch(() => ({ verified: false as const, registrationInfo: undefined }));
     if (!result.verified || !result.registrationInfo) fail(400, "Passkey couldn't be verified");
     const { credential, credentialDeviceType, credentialBackedUp } = result.registrationInfo;
+    // Checked again where it's stored; this is for a clear answer early.
     if (await store.passkey(credential.id)) fail(400, "This passkey is already in use");
     return {
       id: credential.id,
@@ -327,7 +322,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       await limit(req, "register");
       const body = await json<{ name?: unknown; turnstileToken?: unknown }>(req);
       const name = parseName(body.name);
-      await requireHuman(req, body.turnstileToken);
+      await requireHuman(req, body.turnstileToken, "signup");
       if (options.allowSignup && !(await options.allowSignup(req, { name, body }))) {
         fail(403, "Sign-up is closed");
       }
@@ -348,9 +343,8 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       // Checked before the account exists, so a refusal leaves nothing behind.
       const key = await verifiedPasskey(req, response, challenge, userId);
 
-      const at = now();
-      const account = await store.createAccount(userId, name, profile, at);
-      await store.addPasskey(key, at);
+      const account = await store.createAccountWithPasskey(userId, name, profile, key, now());
+      if (account === "taken") fail(400, "This passkey is already in use");
       return signedIn(req, account);
     },
 
@@ -429,7 +423,9 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
     },
 
     "POST passkey-verify": async (req) => {
-      const { userId } = await requireSession(req);
+      const s = await requireSession(req);
+      requireFresh(s);
+      const { userId } = s;
       const body = await json<{ response?: RegistrationResponseJSON }>(req);
       const response = body.response ?? fail(400, "Missing passkey response");
       const challenge = clientChallenge(response);
@@ -444,10 +440,11 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       requireFresh(s);
       const { id } = await json<{ id?: unknown }>(req);
       if (typeof id !== "string") fail(400, "Which passkey?");
-      const keys = await store.passkeysFor(s.userId);
-      if (!keys.some((k) => k.id === id)) fail(404, "No such passkey");
-      if (keys.length === 1) fail(409, "That's your only passkey — add another before removing it");
-      await store.deletePasskey(s.userId, id);
+      // A removed key may have gone with a lost device: every other session
+      // is signed out with it, in the same step.
+      const removed = await store.deletePasskey(s.userId, id, s.tokenHash);
+      if (removed === "missing") fail(404, "No such passkey");
+      if (removed === "last") fail(409, "That's your only passkey — add another before removing it");
       return Response.json({ ok: true });
     },
 
@@ -458,14 +455,17 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       await limit(req, "email");
       const body = await json<{ email?: unknown; turnstileToken?: unknown }>(req);
       const email = parseEmail(body.email);
-      await requireHuman(req, body.turnstileToken);
+      await requireHuman(req, body.turnstileToken, "recover");
 
       // The same answer, in the same time, whether or not the email has an
       // account: this endpoint must not tell a stranger who uses the app. So
       // the lookup and the send happen after the response.
+      // Either way the request counts against the email's hourly cap, so the
+      // cap can't be used to tell the two apart either.
       const work = (async () => {
         const account = await store.accountByEmail(email);
         if (account) await sendCodeFor(email, "recover", account.id);
+        else await store.noteCodeRequest(email, now(), "recover");
       })();
       if (options.waitUntil) options.waitUntil(work.catch(() => {}));
       else await work;
@@ -483,8 +483,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       // Recovering means a device was lost — possibly stolen, passkey and all.
       // Sign the account out everywhere and take its passkeys away; the client
       // adds a fresh one for this device next.
-      await store.deleteSessionsFor(redeemed.userId);
-      await store.deletePasskeysFor(redeemed.userId);
+      await store.revokeEverything(redeemed.userId);
       const account = (await store.account(redeemed.userId)) ?? fail(400, "Account not found");
       return signedIn(req, account);
     },
@@ -500,16 +499,17 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const email = parseEmail((await json<{ email?: unknown }>(req)).email);
 
       // Someone else's email: answer as if sent, and send nothing. Open sign-up
-      // would otherwise make this a way to ask who uses the app — so it counts
-      // against the same hourly cap, and the real send happens after the
+      // would otherwise make this a way to ask who uses the app — so both
+      // count against this account's hourly cap (never the address's, which
+      // isn't this account's to use up), and the real send happens after the
       // answer, the same way recover-start's does.
       const owner = await store.accountByEmail(email);
       const mine = !owner || owner.id === s.userId;
       const code = sixDigitCode();
       const issued = mine
         ? await store.issueCode(email, "verify-email", s.userId, await codeHash(email, "verify-email", code), now())
-        : await store.noteCodeRequest(email, now());
-      if (issued === "rate-limited") fail(429, "Too many codes sent to that email — try again in an hour");
+        : await store.noteCodeRequest(email, now(), "verify-email", s.userId);
+      if (issued === "rate-limited") fail(429, "Too many codes asked for — try again in an hour");
       if (mine) {
         const send = options.sendCode!(email, code, "verify-email");
         if (options.waitUntil) options.waitUntil(send.catch(() => {}));
@@ -525,7 +525,13 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const body = await json<{ email?: unknown; code?: unknown }>(req);
       const email = parseEmail(body.email);
       const code = parseCode(body.code);
-      const redeemed = await store.redeemCode(email, "verify-email", await codeHash(email, "verify-email", code), now());
+      const redeemed = await store.redeemCode(
+        email,
+        "verify-email",
+        await codeHash(email, "verify-email", code),
+        now(),
+        userId,
+      );
       if (redeemed?.userId !== userId) fail(400, "That code is wrong or has expired");
 
       const account = await store.setEmail(userId, email);
@@ -567,7 +573,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       if (!path.startsWith(`${basePath}/`)) return null;
       const action = path.slice(basePath.length + 1);
       try {
-        if (!sameOrigin(req)) fail(403, "Cross-origin request refused");
+        if (!sameOrigin(req, relyingParty(req).origins)) fail(403, "Cross-origin request refused");
         const route = routes[`${req.method} ${action}`];
         if (!route) return Response.json({ error: "Not found" }, { status: 404 });
         return await route(req);
@@ -582,6 +588,37 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       return s ? ((await store.account(s.userId)) as AccountView<P> | null) : null;
     },
   };
+}
+
+/** The form a Turnstile token was solved on. */
+export type TurnstileAction = "signup" | "recover";
+
+/** Whether a request may change state: from one of `origins` (default: the
+ * request's own origin). GET and HEAD always may. SameSite=Lax already keeps
+ * the cookie off cross-site POSTs; this refuses them outright, so nothing
+ * depends on a browser getting SameSite right. Browsers send Origin on every
+ * POST; without one, only a same-origin fetch metadata header will do. The
+ * rule createAuth applies to its own routes — use it on yours. */
+export function sameOrigin(req: Request, origins: string[] = [new URL(req.url).origin]): boolean {
+  if (req.method === "GET" || req.method === "HEAD") return true;
+  const origin = req.headers.get("origin");
+  if (origin === null) return req.headers.get("sec-fetch-site") === "same-origin";
+  return origins.includes(origin);
+}
+
+/** Who a rate limit counts against: the IPv4 address, or an IPv6 address's
+ * /64 — one subscriber usually holds a whole /64, so per-address limits
+ * would hand them 2^64 tries. */
+export function rateLimitSubject(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const [head = "", tail = ""] = ip.toLowerCase().split("::");
+  const left = head ? head.split(":") : [];
+  const right = ip.includes("::") && tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right] : left;
+  return `${groups
+    .slice(0, 4)
+    .map((g) => g.replace(/^0+(?=.)/, ""))
+    .join(":")}::/64`;
 }
 
 // ---- parsing --------------------------------------------------------------

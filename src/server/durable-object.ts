@@ -23,7 +23,8 @@ const METHODS = new Set(
 );
 
 export class AuthDurableObject<Env = unknown> extends DurableObject<Env> {
-  private store = new AuthStore(this.ctx.storage.sql);
+  // Multi-step writes (and schema migrations) commit whole or not at all.
+  private store = new AuthStore(this.ctx.storage.sql, (fn) => this.ctx.storage.transactionSync(fn));
   /** Checked once per instance, not per call: every session check comes here. */
   private sweepScheduled = false;
 

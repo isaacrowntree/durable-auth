@@ -124,7 +124,7 @@ describe("creating an account", () => {
   });
 
   it("needs Turnstile when the server has it", async () => {
-    const verify = vi.fn(async (token: string) => token === "human");
+    const verify = vi.fn(async (token: string, _ip: string | null, _action: string) => token === "human");
     options.turnstile = { siteKey: "site", verify };
     rebuild();
     expect((await call("register-options", { body: { name: "Bot" } })).status).toBe(400);
@@ -132,6 +132,8 @@ describe("creating an account", () => {
     expect((await call("register-options", { body: { name: "Isaac", turnstileToken: "human" } })).status).toBe(200);
     // No token, no round trip to Cloudflare.
     expect(verify.mock.calls.map(([token]) => token)).toEqual(["robot", "human"]);
+    // Told which form the token is for, so a sign-up token can't recover.
+    expect(verify.mock.calls.map(([, , action]) => action)).toEqual(["signup", "signup"]);
     expect((await call("config")).body.turnstileSiteKey).toBe("site");
   });
 });
@@ -271,7 +273,9 @@ describe("recovering an account", () => {
     for (let i = 0; i < 6; i++) {
       expect((await call("recover-start", { body: { email: "isaac@example.com" } })).status).toBe(200);
     }
-    expect(sent).toHaveLength(4); // the verify-email code was the hour's first
+    // Adding the email counted against the account, not the address, so
+    // recovery has the hour's whole allowance.
+    expect(sent).toHaveLength(5);
   });
 
   it("refuses a wrong code", async () => {
@@ -420,6 +424,12 @@ describe("rate limits", () => {
     expect((await at())!.status).toBe(200);
     expect(keys).toEqual(["login:203.0.113.7", "login:unknown"]);
 
+    // One subscriber holds a whole IPv6 /64: it's one client, not 2^64.
+    keys.length = 0;
+    await at("2001:db8:a:b:1:2:3:4");
+    await at("2001:db8:a:b::99");
+    expect(keys).toEqual(["login:2001:db8:a:b::/64", "login:2001:db8:a:b::/64"]);
+
     keys.length = 0;
     const { cookie } = await signUp(); // register ×2
     const login = await call("login-options", { body: {} }); // login
@@ -541,13 +551,60 @@ describe("telling who has an account", () => {
     await call("email-start", { body: { email: "taken@example.com" }, cookie: owner.cookie });
     await call("email-verify", { body: { email: "taken@example.com", code: sent.pop()!.code }, cookie: owner.cookie });
     t += 61 * MINUTE; // a fresh hour for the cap
-    const prober = await signUp("Prober", "key-p");
-    const statuses = async (email: string) => {
+    const statuses = async (email: string, keyId: string) => {
+      const prober = await signUp("Prober", keyId);
       const out = [];
       for (let i = 0; i < 6; i++) out.push((await call("email-start", { body: { email }, cookie: prober.cookie })).status);
       return out;
     };
-    expect(await statuses("taken@example.com")).toEqual(await statuses("free@example.com"));
+    expect(await statuses("taken@example.com", "key-p1")).toEqual(await statuses("free@example.com", "key-p2"));
+  });
+});
+
+describe("telling who has an account, by the hourly caps", () => {
+  // Recovery counts against the email's cap whether or not anyone owns it,
+  // and adding an email counts against the asking account's — so no mix of
+  // the two can tell a registered email from a free one.
+  it("answers the same for a registered email and a free one", async () => {
+    const owner = await signUp("Owner", "key-o");
+    await call("email-start", { body: { email: "taken@example.com" }, cookie: owner.cookie });
+    await call("email-verify", { body: { email: "taken@example.com", code: sent.pop()!.code }, cookie: owner.cookie });
+    t += 61 * MINUTE;
+    const probe = async (email: string, keyId: string) => {
+      const prober = await signUp("Prober", keyId);
+      const out = [];
+      for (let i = 0; i < 4; i++) out.push((await call("email-start", { body: { email }, cookie: prober.cookie })).status);
+      out.push((await call("recover-start", { body: { email } })).status);
+      out.push((await call("email-start", { body: { email }, cookie: prober.cookie })).status);
+      for (let i = 0; i < 5; i++) out.push((await call("recover-start", { body: { email } })).status);
+      return out;
+    };
+    expect(await probe("taken@example.com", "key-p1")).toEqual(await probe("free@example.com", "key-p2"));
+  });
+
+  // Asking to add someone else's email mustn't use up the codes its owner
+  // needs to recover.
+  it("leaves the owner's recovery alone", async () => {
+    const owner = await signUp("Owner", "key-o");
+    await call("email-start", { body: { email: "mine@example.com" }, cookie: owner.cookie });
+    await call("email-verify", { body: { email: "mine@example.com", code: sent.pop()!.code }, cookie: owner.cookie });
+    const other = await signUp("Other", "key-x");
+    for (let i = 0; i < 6; i++) await call("email-start", { body: { email: "mine@example.com" }, cookie: other.cookie });
+    await call("recover-start", { body: { email: "mine@example.com" } });
+    expect(sent.map((m) => m.purpose)).toEqual(["recover"]);
+  });
+
+  // Two accounts after one address: the second can't replace the first's
+  // code and so burn it.
+  it("keeps each account's code for the same address its own", async () => {
+    const a = await signUp("A", "key-a");
+    const b = await signUp("B", "key-b");
+    await call("email-start", { body: { email: "e@example.com" }, cookie: a.cookie });
+    const aCode = sent.pop()!.code;
+    await call("email-start", { body: { email: "e@example.com" }, cookie: b.cookie });
+    const res = await call("email-verify", { body: { email: "e@example.com", code: aCode }, cookie: a.cookie });
+    expect(res.status).toBe(200);
+    expect(res.body.account.email).toBe("e@example.com");
   });
 });
 
@@ -592,6 +649,26 @@ describe("managing passkeys", () => {
     expect((await call("passkey-delete", { body: { id: "key-2" }, cookie })).status).toBe(409);
     const login = await call("login-options", { body: {} });
     expect((await call("login-verify", { body: { response: passkeyResponse("key-1", login.body.challenge) } })).status).toBe(400);
+  });
+
+  // The removed key may have gone with a lost device, signed in.
+  it("signs out every other device when one is removed", async () => {
+    const cookie = await twoKeys();
+    const login = await call("login-options", { body: {} });
+    const lost = await call("login-verify", { body: { response: passkeyResponse("key-2", login.body.challenge) } });
+    expect((await call("passkey-delete", { body: { id: "key-2" }, cookie })).status).toBe(200);
+    expect((await call("session", { cookie: lost.cookie })).status).toBe(401);
+    expect((await call("session", { cookie })).status).toBe(200);
+  });
+
+  // The options were fresh; the verify must be too, not five minutes on.
+  it("won't add one once the session has gone stale", async () => {
+    const { cookie } = await signUp();
+    t += 4 * MINUTE; // still fresh
+    const options_ = await call("passkey-options", { body: {}, cookie });
+    t += 2 * MINUTE; // the challenge is still live; the session isn't fresh
+    const res = await call("passkey-verify", { body: { response: passkeyResponse("key-2", options_.body.challenge) }, cookie });
+    expect(res).toMatchObject({ status: 403, body: { reauth: true } });
   });
 
   it("won't touch another account's passkey", async () => {
@@ -1108,7 +1185,7 @@ describe("adding a recovery email", () => {
     for (let i = 0; i < 5; i++) expect((await call("email-start", { body: { email: "i@example.com" }, cookie })).status).toBe(200);
     expect(await call("email-start", { body: { email: "i@example.com" }, cookie })).toMatchObject({
       status: 429,
-      body: { error: "Too many codes sent to that email — try again in an hour" },
+      body: { error: "Too many codes asked for — try again in an hour" },
     });
     expect(sent).toHaveLength(5);
   });

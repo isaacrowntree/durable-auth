@@ -68,26 +68,47 @@ interface ModelCode {
 
 type Outcome = "redeemed" | "locked" | "none" | "dead" | "wrong";
 
+/** Where a code lives: one recovery code per email; one verification code
+ * per email per account asking. */
+const slot = (email: string, purpose: CodePurpose, userId: string) =>
+  purpose === "recover" ? `${email}|recover` : `${email}|verify-email|${userId}`;
+
+/** What a cap counts against: recovery, the email; verification, the account. */
+const budget = (email: string, purpose: CodePurpose, userId: string) =>
+  purpose === "recover" ? `recover|${email}` : `verify|${userId}`;
+
 /** The rules for codes as the docs state them, over plain arrays. */
 class CodeModel {
   codes = new Map<string, ModelCode>();
-  log: { email: string; at: number }[] = [];
-  failures: { email: string; at: number }[] = [];
+  log: { key: string; at: number }[] = [];
+  failures: { key: string; at: number }[] = [];
 
   issue(email: string, purpose: CodePurpose, userId: string, hash: string, now: number): "ok" | "rate-limited" {
     for (const [k, c] of this.codes) if (c.expiresAt <= now) this.codes.delete(k);
     this.log = this.log.filter((l) => l.at > now - HOUR);
-    if (this.log.filter((l) => l.email === email).length >= CODES_PER_HOUR) return "rate-limited";
-    this.log.push({ email, at: now });
-    this.codes.set(`${email}|${purpose}`, { userId, hash, expiresAt: now + CODE_TTL_MS, attempts: 0 });
+    const key = budget(email, purpose, userId);
+    if (this.log.filter((l) => l.key === key).length >= CODES_PER_HOUR) return "rate-limited";
+    this.log.push({ key, at: now });
+    this.codes.set(slot(email, purpose, userId), { userId, hash, expiresAt: now + CODE_TTL_MS, attempts: 0 });
     return "ok";
   }
 
-  redeem(email: string, purpose: CodePurpose, hash: string, now: number): { result: { userId: string } | null; outcome: Outcome; code?: string } {
+  redeem(
+    email: string,
+    purpose: CodePurpose,
+    hash: string,
+    now: number,
+    userId: string,
+  ): { result: { userId: string } | null; outcome: Outcome; code?: string } {
     this.failures = this.failures.filter((f) => f.at > now - DAY);
-    const mine = this.failures.filter((f) => f.email === email).length;
-    if (mine >= MAX_CODE_FAILURES || this.failures.length >= MAX_GLOBAL_CODE_FAILURES) return { result: null, outcome: "locked" };
-    const key = `${email}|${purpose}`;
+    const counted = budget(email, purpose, userId);
+    const mine = this.failures.filter((f) => f.key === counted).length;
+    // The global cap is recovery's alone.
+    const everyone = this.failures.filter((f) => f.key.startsWith("recover|")).length;
+    if (mine >= MAX_CODE_FAILURES || (purpose === "recover" && everyone >= MAX_GLOBAL_CODE_FAILURES)) {
+      return { result: null, outcome: "locked" };
+    }
+    const key = slot(email, purpose, userId);
     const code = this.codes.get(key);
     if (!code) return { result: null, outcome: "none" };
     if (code.expiresAt <= now || code.attempts >= CODE_MAX_ATTEMPTS) {
@@ -95,7 +116,7 @@ class CodeModel {
       return { result: null, outcome: "dead" };
     }
     if (code.hash !== hash) {
-      this.failures.push({ email, at: now });
+      this.failures.push({ key: counted, at: now });
       code.attempts++;
       return { result: null, outcome: "wrong", code: code.hash };
     }
@@ -112,6 +133,9 @@ const codeOp = fc.oneof(
       who: fc.nat(EMAILS.length - 1),
       spelling: fc.nat(1),
       purpose: fc.constantFrom(...PURPOSES),
+      // Which account asks for a verification code: anyone may ask to verify
+      // any address, so two accounts can be after the same one.
+      by: fc.nat(2),
     }),
   },
   {
@@ -124,7 +148,8 @@ const codeOp = fc.oneof(
       // "right" is the latest code sent to this email for this purpose — a
       // replay once it's used. The others are what an attacker might hold:
       // an older code, the code for the other purpose, another email's code.
-      guess: fc.constantFrom("right", "right", "wrong", "stale", "other-purpose", "other-email"),
+      guess: fc.constantFrom("right", "right", "wrong", "stale", "other-purpose", "other-email", "other-account"),
+      by: fc.nat(2),
       // Guessers guess in bursts; one at a time rarely reaches a lockout.
       times: fc.integer({ min: 1, max: 6 }),
     }),
@@ -153,12 +178,14 @@ function runCodes(ops: CodeOp[], seed?: (db: DatabaseSync, model: CodeModel) => 
 
   const issued = new Map<string, Issued>();
   const sent = new Map<string, string[]>(); // slot → hashes in issue order
-  const okIssues = new Map<string, number[]>(); // email → when
+  const okIssues = new Map<string, number[]>(); // budget → when
   const redeemed = new Set<string>();
   const wrongOn = new Map<string, number>(); // code → counted wrong guesses
-  const failures = new Map<string, number[]>(); // email → counted wrong guesses' times
-  const allFailures: number[] = [...model.failures.map((f) => f.at)];
-  const slot = (email: string, purpose: CodePurpose) => `${email}|${purpose}`;
+  const failures = new Map<string, number[]>(); // budget → counted wrong guesses' times
+  const allFailures: number[] = [...model.failures.map((f) => f.at)]; // recovery's
+  /** Who asks: the email's owner recovers it; anyone may verify it. */
+  const asker = (op: { who: number; purpose: CodePurpose; by: number }) =>
+    op.purpose === "recover" ? `u${op.who}` : `u${op.by}`;
 
   for (const op of ops) {
     if (op.kind === "wait") {
@@ -170,43 +197,50 @@ function runCodes(ops: CodeOp[], seed?: (db: DatabaseSync, model: CodeModel) => 
 
     if (op.kind === "issue") {
       const hash = `h${++n}`;
-      const userId = `u${op.who}`;
+      const userId = asker(op);
       const got = store.issueCode(typed, op.purpose, userId, hash, now);
       expect(got).toBe(model.issue(email, op.purpose, userId, hash, now));
       if (got === "ok") {
         issued.set(hash, { email, purpose: op.purpose, at: now, userId });
-        sent.set(slot(email, op.purpose), [...(sent.get(slot(email, op.purpose)) ?? []), hash]);
-        const times = [...(okIssues.get(email) ?? []), now];
-        okIssues.set(email, times);
-        // However often it's asked, no email gets more than the cap an hour.
+        const at = slot(email, op.purpose, userId);
+        sent.set(at, [...(sent.get(at) ?? []), hash]);
+        const counted = budget(email, op.purpose, userId);
+        const times = [...(okIssues.get(counted) ?? []), now];
+        okIssues.set(counted, times);
+        // However often it's asked, no email gets more recovery codes than the
+        // cap an hour, and no account more verification codes.
         expect(within(times, now, HOUR)).toBeLessThanOrEqual(CODES_PER_HOUR);
       }
       continue;
     }
 
-    const latest = (e: string, p: CodePurpose) => sent.get(slot(e, p))?.at(-1);
+    const userId = asker(op);
+    const latest = (e: string, p: CodePurpose, u = userId) => sent.get(slot(e, p, u))?.at(-1);
     const other = op.purpose === "recover" ? "verify-email" : "recover";
     const guess =
       {
         right: latest(email, op.purpose),
         wrong: undefined,
-        stale: sent.get(slot(email, op.purpose))?.at(-2),
-        "other-purpose": latest(email, other),
+        stale: sent.get(slot(email, op.purpose, userId))?.at(-2),
+        "other-purpose": latest(email, other, other === "recover" ? `u${op.who}` : `u${op.by}`),
         "other-email": latest(norm((op.who + 1) % EMAILS.length), op.purpose),
+        // Another account's verification code for the same address.
+        "other-account": latest(email, op.purpose, `u${(op.by + 1) % 3}`),
       }[op.guess] ?? "not-a-code";
 
+    const counted = budget(email, op.purpose, userId);
     for (let i = 0; i < op.times; i++) {
-      const got = store.redeemCode(typed, op.purpose, guess, now);
-      const expected = model.redeem(email, op.purpose, guess, now);
+      const got = store.redeemCode(typed, op.purpose, guess, now, op.purpose === "recover" ? null : userId);
+      const expected = model.redeem(email, op.purpose, guess, now, userId);
       expect(got).toEqual(expected.result);
 
       if (expected.outcome === "wrong") {
         const code = expected.code!;
         wrongOn.set(code, (wrongOn.get(code) ?? 0) + 1);
-        failures.set(email, [...(failures.get(email) ?? []), now]);
-        allFailures.push(now);
+        failures.set(counted, [...(failures.get(counted) ?? []), now]);
+        if (op.purpose === "recover") allFailures.push(now);
         expect(wrongOn.get(code)).toBeLessThanOrEqual(CODE_MAX_ATTEMPTS);
-        expect(within(failures.get(email)!, now, DAY)).toBeLessThanOrEqual(MAX_CODE_FAILURES);
+        expect(within(failures.get(counted)!, now, DAY)).toBeLessThanOrEqual(MAX_CODE_FAILURES);
         expect(within(allFailures, now, DAY)).toBeLessThanOrEqual(MAX_GLOBAL_CODE_FAILURES);
       }
 
@@ -217,14 +251,16 @@ function runCodes(ops: CodeOp[], seed?: (db: DatabaseSync, model: CodeModel) => 
         expect(code!.email).toBe(email);
         expect(code!.purpose).toBe(op.purpose);
         expect(got.userId).toBe(code!.userId);
+        // A verification code only ever comes back for the account it went to.
+        if (op.purpose === "verify-email") expect(got.userId).toBe(userId);
         expect(guess, "redeemed a code a newer one replaced").toBe(latest(email, op.purpose));
         expect(redeemed.has(guess), "redeemed a code twice").toBe(false);
         expect(now).toBeLessThan(code!.at + CODE_TTL_MS);
         redeemed.add(guess);
         // And the guesses the model counted against it.
         expect(wrongOn.get(guess) ?? 0).toBeLessThan(CODE_MAX_ATTEMPTS);
-        expect(within(failures.get(email) ?? [], now, DAY)).toBeLessThan(MAX_CODE_FAILURES);
-        expect(within(allFailures, now, DAY)).toBeLessThan(MAX_GLOBAL_CODE_FAILURES);
+        expect(within(failures.get(counted) ?? [], now, DAY)).toBeLessThan(MAX_CODE_FAILURES);
+        if (op.purpose === "recover") expect(within(allFailures, now, DAY)).toBeLessThan(MAX_GLOBAL_CODE_FAILURES);
       }
     }
   }
@@ -242,7 +278,7 @@ describe("codes, over random histories", () => {
   // them on the books first: the last few are what the random ops spend.
   // Written straight into the table — a thousand redeemCode calls a run is
   // slow, and store.test.ts already reaches the cap that way.
-  it("stop everywhere at the global cap, and start again a day later", () => {
+  it("stop recovery everywhere at the global cap, and start again a day later", () => {
     fc.assert(
       fc.property(fc.integer({ min: 0, max: 12 }), fc.array(codeOp, { minLength: 1, maxLength: 60, size: "max" }), (headroom, ops) =>
         runCodes(ops, (db, model) => {
@@ -251,7 +287,7 @@ describe("codes, over random histories", () => {
             `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?)
              INSERT INTO code_failures (email, at) SELECT 'seed' || i || '@example.com', 0 FROM n`,
           ).run(seeded);
-          for (let i = 0; i < seeded; i++) model.failures.push({ email: `seed${i}@example.com`, at: 0 });
+          for (let i = 0; i < seeded; i++) model.failures.push({ key: `recover|seed${i}@example.com`, at: 0 });
         }),
       ),
       { numRuns: RUNS },

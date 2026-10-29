@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { memorySql } from "../../test/sqlite";
+import { memorySql, memoryTransaction } from "../../test/sqlite";
 import {
   AuthStore,
   CHALLENGE_TTL_MS,
@@ -253,6 +253,72 @@ describe("codes", () => {
   });
 });
 
+describe("verification codes", () => {
+  // Two accounts after one address each get their own code: one can't
+  // replace — and so burn — the other's.
+  it("belong to the account that asked", () => {
+    store.issueCode("e@example.com", "verify-email", "u1", "mine", 0);
+    store.issueCode("e@example.com", "verify-email", "u2", "theirs", 1);
+    expect(store.redeemCode("e@example.com", "verify-email", "theirs", 2, "u1")).toBeNull();
+    expect(store.redeemCode("e@example.com", "verify-email", "mine", 3, "u1")).toEqual({ userId: "u1" });
+    expect(store.redeemCode("e@example.com", "verify-email", "theirs", 4, "u2")).toEqual({ userId: "u2" });
+  });
+
+  // Asking to verify an address can't spend that address's recovery
+  // allowance, or someone else's.
+  it(`are capped at ${CODES_PER_HOUR} an hour per account, apart from recovery's cap`, () => {
+    for (let i = 0; i < CODES_PER_HOUR; i++) {
+      expect(store.noteCodeRequest(`x${i}@example.com`, i, "verify-email", "u1")).toBe("ok");
+    }
+    expect(store.issueCode("y@example.com", "verify-email", "u1", "h", 10)).toBe("rate-limited");
+    expect(store.issueCode("x0@example.com", "verify-email", "u2", "h", 10)).toBe("ok");
+    expect(store.issueCode("x0@example.com", "recover", "u3", "h", 10)).toBe("ok");
+  });
+
+  // Wrong guesses at your own verification codes can't pause recovery for
+  // everyone (or for anyone).
+  it("don't count towards recovery's caps", () => {
+    for (let u = 0; u < MAX_GLOBAL_CODE_FAILURES / MAX_CODE_FAILURES + 1; u++) {
+      for (let i = 0; i < MAX_CODE_FAILURES; i += CODE_MAX_ATTEMPTS) {
+        store.issueCode("victim@example.com", "verify-email", `u${u}`, "real", i);
+        for (let j = 0; j < CODE_MAX_ATTEMPTS; j++) store.redeemCode("victim@example.com", "verify-email", "x", i + 1, `u${u}`);
+      }
+    }
+    store.issueCode("victim@example.com", "recover", "owner", "right", 2);
+    expect(store.redeemCode("victim@example.com", "recover", "right", 3)).toEqual({ userId: "owner" });
+  });
+
+  it(`lock the account's verifying for a day after ${MAX_CODE_FAILURES} wrong guesses`, () => {
+    for (let i = 0; i < MAX_CODE_FAILURES; i += CODE_MAX_ATTEMPTS) {
+      store.issueCode(`e${i}@example.com`, "verify-email", "u1", "real", i);
+      for (let j = 0; j < CODE_MAX_ATTEMPTS; j++) store.redeemCode(`e${i}@example.com`, "verify-email", "x", i + 1, "u1");
+    }
+    store.issueCode("new@example.com", "verify-email", "u1", "right", 20);
+    expect(store.redeemCode("new@example.com", "verify-email", "right", 21, "u1")).toBeNull();
+    store.issueCode("new@example.com", "verify-email", "u1", "right", DAY + 21);
+    expect(store.redeemCode("new@example.com", "verify-email", "right", DAY + 22, "u1")).toEqual({ userId: "u1" });
+  });
+});
+
+describe("signing up and recovering", () => {
+  const key = { id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0 };
+
+  it("creates the account and its passkey together, or neither", () => {
+    expect(store.createAccountWithPasskey("u1", "A", PROFILE, key, 0)).toMatchObject({ id: "u1" });
+    expect(store.createAccountWithPasskey("u2", "B", PROFILE, { ...key, userId: "u2" }, 0)).toBe("taken");
+    expect(store.account("u2")).toBeNull();
+    expect(store.passkey("k1")!.userId).toBe("u1");
+  });
+
+  it("revokes every session and passkey at once", () => {
+    store.createAccountWithPasskey("u1", "A", PROFILE, key, 0);
+    store.createSession("s1", "u1", 0);
+    store.revokeEverything("u1");
+    expect(store.passkeysFor("u1")).toEqual([]);
+    expect(store.session("s1", 1)).toBeNull();
+  });
+});
+
 describe("passkeys an account can see", () => {
   it("list without key material, with when each was last used", () => {
     store.addPasskey({ id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0, deviceType: "multiDevice", backedUp: true }, 10);
@@ -266,10 +332,41 @@ describe("passkeys an account can see", () => {
 
   it("can only be removed by their own account", () => {
     store.addPasskey({ id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0 }, 0);
-    expect(store.deletePasskey("u2", "k1")).toBe(false);
+    store.addPasskey({ id: "k2", userId: "u1", publicKey: new Uint8Array([2]), counter: 0 }, 0);
+    expect(store.deletePasskey("u2", "k1")).toBe("missing");
     expect(store.passkey("k1")).not.toBeNull();
-    expect(store.deletePasskey("u1", "k1")).toBe(true);
+    expect(store.deletePasskey("u1", "k1")).toBe("removed");
     expect(store.passkey("k1")).toBeNull();
+  });
+
+  // Checked in the same step as the delete: two removals at once can't
+  // each see two keys and leave none.
+  it("never removes the last one", () => {
+    store.addPasskey({ id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0 }, 0);
+    expect(store.deletePasskey("u1", "k1")).toBe("last");
+    expect(store.passkey("k1")).not.toBeNull();
+  });
+
+  // The key may have gone with a lost device; so does every session but the
+  // one removing it.
+  it("signs out every other session when one is removed", () => {
+    store.addPasskey({ id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0 }, 0);
+    store.addPasskey({ id: "k2", userId: "u1", publicKey: new Uint8Array([2]), counter: 0 }, 0);
+    store.createSession("here", "u1", 0);
+    store.createSession("lost", "u1", 0);
+    store.createSession("theirs", "u2", 0);
+    store.deletePasskey("u1", "k2", "here");
+    expect(store.session("here", 1)).not.toBeNull();
+    expect(store.session("lost", 1)).toBeNull();
+    expect(store.session("theirs", 1)).not.toBeNull();
+  });
+
+  // Two sign-ins landing out of order can't wind the counter back.
+  it("only moves a counter forward", () => {
+    store.addPasskey({ id: "k1", userId: "u1", publicKey: new Uint8Array([1]), counter: 0 }, 0);
+    store.passkeyUsed("k1", 5, 1);
+    store.passkeyUsed("k1", 3, 2);
+    expect(store.passkey("k1")!.counter).toBe(5);
   });
 });
 
@@ -335,6 +432,34 @@ describe("a database from schema version 1", () => {
     // Opening it again is a no-op, not a second ALTER.
     expect(() => new AuthStore(memorySql(db))).not.toThrow();
     expect(db.prepare(`SELECT value FROM durable_auth_meta WHERE key = 'schema'`).get()).toEqual({ value: SCHEMA_VERSION });
+  });
+
+  // Codes, requests and failures in flight carry over the codes table's
+  // rebuild.
+  it("keeps outstanding codes through the upgrade", () => {
+    const db = v1();
+    db.exec(`CREATE TABLE codes (email TEXT NOT NULL, purpose TEXT NOT NULL, user_id TEXT NOT NULL, code_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (email, purpose))`);
+    db.prepare(`INSERT INTO codes VALUES ('i@example.com', 'recover', 'u1', 'hash', ?, 0)`).run(CODE_TTL_MS);
+    const upgraded = new AuthStore(memorySql(db));
+    expect(upgraded.redeemCode("i@example.com", "recover", "hash", 1)).toEqual({ userId: "u1" });
+  });
+
+  // A migration that fails part-way must leave nothing half-done, or the
+  // next start re-runs the ALTERs that did land, fails on them, and the DO
+  // never starts again.
+  it("rolls a failed upgrade back whole, so it can run again", () => {
+    const db = v1();
+    new AuthStore(memorySql(db)); // up to date…
+    db.prepare(`UPDATE durable_auth_meta SET value = 2 WHERE key = 'schema'`).run(); // …but claims 2,
+    // with the rebuilt codes table missing and one late column already there.
+    db.exec(`DROP TABLE codes; CREATE TABLE codes (email TEXT NOT NULL, purpose TEXT NOT NULL, user_id TEXT NOT NULL,
+      code_hash TEXT NOT NULL, expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (email, purpose))`);
+    // The rebuild runs first, then an ALTER that fails: the column exists.
+    const keyColumns = () => (db.prepare(`PRAGMA table_info(codes)`).all() as { pk: number }[]).filter((c) => c.pk > 0).length;
+    expect(() => new AuthStore(memorySql(db), memoryTransaction(db))).toThrow();
+    expect(keyColumns()).toBe(2); // the rebuild was rolled back with it
+    expect(db.prepare(`SELECT value FROM durable_auth_meta WHERE key = 'schema'`).get()).toEqual({ value: 2 });
   });
 
   // Roll a deploy back and forward again: the older code must not record its

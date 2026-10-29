@@ -39,16 +39,28 @@ export function cloudflareEmail(binding: EmailBinding, options: { from: string; 
   };
 }
 
-/** Turnstile's server-side check, for `turnstile.verify`. */
-export function turnstileVerifier(secret: string) {
-  return async (token: string, ip: string | null): Promise<boolean> => {
+/** Turnstile's server-side check, for `turnstile.verify`.
+ *
+ * `hostnames`: refuse a token solved on any other site using the same
+ * widget. `checkAction`: refuse a token solved on a different form — render
+ * the widget with `data-action="signup"` on sign-up and `"recover"` on
+ * recovery, and a token from one won't pass the other. */
+export function turnstileVerifier(secret: string, expect: { hostnames?: string[]; checkAction?: boolean } = {}) {
+  return async (token: string, ip: string | null, action?: string): Promise<boolean> => {
     const form = new FormData();
     form.append("secret", secret);
     form.append("response", token);
     if (ip) form.append("remoteip", ip);
     const res = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", { method: "POST", body: form });
-    const outcome = (await res.json().catch(() => null)) as { success?: boolean } | null;
-    return outcome?.success === true;
+    const outcome = (await res.json().catch(() => null)) as {
+      success?: boolean;
+      hostname?: string;
+      action?: string;
+    } | null;
+    if (outcome?.success !== true) return false;
+    if (expect.hostnames && !expect.hostnames.includes(outcome.hostname ?? "")) return false;
+    if (expect.checkAction && action !== undefined && outcome.action !== action) return false;
+    return true;
   };
 }
 

@@ -14,6 +14,11 @@ export interface Sql {
   exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] };
 }
 
+/** Runs `fn` as one transaction, rolled back if it throws — a Durable
+ * Object's `ctx.storage.transactionSync`. Without one, a throw part-way
+ * through a multi-statement step leaves the statements before it applied. */
+export type Transaction = <T>(fn: () => T) => T;
+
 /** Whatever the app keeps on an account besides its name and email — units,
  * a theme, a plan. Stored as JSON; `createAuth({ parseProfile })` validates it. */
 export type Profile = Record<string, unknown>;
@@ -63,16 +68,21 @@ export const SESSION_TTL_MS = 365 * DAY;
 export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const CODE_TTL_MS = 10 * 60 * 1000;
 export const CODE_MAX_ATTEMPTS = 5;
-/** Codes issued per email per hour — a cap on how often we'll email anyone,
- * whoever is asking. */
+/** Codes per hour. Recovery codes count per email — a cap on how often a
+ * stranger can make us email anyone. Verification codes count per account
+ * asking, whichever addresses it asks about, so one account can't use up
+ * someone else's allowance (or learn anything from it). */
 export const CODES_PER_HOUR = 5;
-/** Wrong guesses per email per day, across every code issued to it. Past
- * this, the email can't be used to recover for a day. */
+/** Wrong guesses a day: per email for recovery codes, across every code
+ * issued to it, and per account for verification codes. Past this, that
+ * email can't recover (or that account can't verify) for a day. */
 export const MAX_CODE_FAILURES = 10;
-/** Wrong guesses a day across every email. The per-email caps don't stop
- * ten guesses at each of a hundred thousand known emails; this does, at the
- * price that a flood of wrong guesses pauses recovery for everyone until it
- * ages out. Put Turnstile and rate limits in front so it never comes to that. */
+/** Wrong recovery-code guesses a day across every email. The per-email caps
+ * don't stop ten guesses at each of a hundred thousand known emails; this
+ * does, at the price that a flood of wrong guesses pauses recovery for
+ * everyone until it ages out. Put Turnstile and rate limits in front so it
+ * never comes to that. Verification codes don't count here: they're bound to
+ * the account that asked for them, so guessing at them gains nothing. */
 export const MAX_GLOBAL_CODE_FAILURES = 1000;
 
 /** Version 1 is the schema as first shipped; later versions are ALTERs on top
@@ -146,6 +156,34 @@ const MIGRATIONS: string[][] = [
     `CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at)`,
     `CREATE INDEX IF NOT EXISTS code_failures_at ON code_failures(at)`,
   ],
+  [
+    // Verification codes belong to the account that asked: two accounts
+    // verifying one address each get their own code, so one can't replace
+    // (and so burn) the other's.
+    `CREATE TABLE codes_v3 (
+      email TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (email, purpose, user_id)
+    )`,
+    `INSERT INTO codes_v3 SELECT email, purpose, user_id, code_hash, expires_at, attempts FROM codes`,
+    `DROP TABLE codes`,
+    `ALTER TABLE codes_v3 RENAME TO codes`,
+    `CREATE INDEX IF NOT EXISTS codes_expiry ON codes(expires_at)`,
+    // Code requests and failures say what they were for and who asked, so
+    // recovery and verification keep separate budgets.
+    `ALTER TABLE code_log ADD COLUMN purpose TEXT NOT NULL DEFAULT 'recover'`,
+    `ALTER TABLE code_log ADD COLUMN user_id TEXT`,
+    `CREATE INDEX IF NOT EXISTS code_log_at ON code_log(at)`,
+    `CREATE INDEX IF NOT EXISTS code_log_user ON code_log(user_id, at)`,
+    `ALTER TABLE code_failures ADD COLUMN purpose TEXT NOT NULL DEFAULT 'recover'`,
+    `ALTER TABLE code_failures ADD COLUMN user_id TEXT`,
+    `CREATE INDEX IF NOT EXISTS code_failures_user ON code_failures(user_id, at)`,
+    `CREATE INDEX IF NOT EXISTS challenges_expiry ON challenges(expires_at)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length + 1;
@@ -170,9 +208,17 @@ interface PasskeyRow {
 const PASSKEY_COLUMNS = `id, user_id, public_key, counter, transports, device_type, backed_up`;
 
 export class AuthStore {
-  constructor(private readonly sql: Sql) {
-    for (const stmt of SCHEMA) sql.exec(stmt);
-    this.migrate();
+  private readonly atomic: Transaction;
+
+  constructor(
+    private readonly sql: Sql,
+    transaction?: Transaction,
+  ) {
+    this.atomic = transaction ?? ((fn) => fn());
+    this.atomic(() => {
+      for (const stmt of SCHEMA) sql.exec(stmt);
+      this.migrate();
+    });
   }
 
   private rows<T>(query: string, ...bindings: unknown[]): T[] {
@@ -243,6 +289,23 @@ export class AuthStore {
 
   // ---- accounts ----------------------------------------------------------
 
+  /** Sign-up: the account and its first passkey, both or neither. "taken"
+   * when the passkey is already registered — nothing is written then. */
+  createAccountWithPasskey(
+    id: string,
+    name: string,
+    profile: Profile,
+    key: StoredPasskey,
+    now: number,
+  ): AccountView | "taken" {
+    return this.atomic(() => {
+      if (this.passkey(key.id)) return "taken";
+      const account = this.createAccount(id, name, profile, now);
+      this.addPasskey({ ...key, userId: id }, now);
+      return account;
+    });
+  }
+
   createAccount(id: string, name: string, profile: Profile, now: number): AccountView {
     this.sql.exec(
       `INSERT INTO users (id, name, email, profile, created_at) VALUES (?, ?, NULL, ?, ?)`,
@@ -292,16 +355,20 @@ export class AuthStore {
   /** Everything this account owns in auth state. The app's own data is the
    * caller's to remove — it lives elsewhere. */
   deleteAccount(id: string): void {
-    const email = this.account(id)?.email;
-    this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, id);
-    this.sql.exec(`DELETE FROM sessions WHERE user_id = ?`, id);
-    this.sql.exec(`DELETE FROM codes WHERE user_id = ?`, id);
-    this.sql.exec(`DELETE FROM challenges WHERE user_id = ?`, id);
-    if (email) {
-      this.sql.exec(`DELETE FROM code_log WHERE email = ?`, email);
-      this.sql.exec(`DELETE FROM code_failures WHERE email = ?`, email);
-    }
-    this.sql.exec(`DELETE FROM users WHERE id = ?`, id);
+    this.atomic(() => {
+      const email = this.account(id)?.email;
+      this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, id);
+      this.sql.exec(`DELETE FROM sessions WHERE user_id = ?`, id);
+      this.sql.exec(`DELETE FROM codes WHERE user_id = ?`, id);
+      this.sql.exec(`DELETE FROM challenges WHERE user_id = ?`, id);
+      this.sql.exec(`DELETE FROM code_log WHERE user_id = ?`, id);
+      this.sql.exec(`DELETE FROM code_failures WHERE user_id = ?`, id);
+      if (email) {
+        this.sql.exec(`DELETE FROM code_log WHERE email = ?`, email);
+        this.sql.exec(`DELETE FROM code_failures WHERE email = ?`, email);
+      }
+      this.sql.exec(`DELETE FROM users WHERE id = ?`, id);
+    });
   }
 
   // ---- passkeys ----------------------------------------------------------
@@ -353,21 +420,40 @@ export class AuthStore {
     }));
   }
 
-  /** Remove one passkey, only if it's this account's. */
-  deletePasskey(userId: string, id: string): boolean {
-    const owned = this.rows(`SELECT id FROM passkeys WHERE id = ? AND user_id = ?`, id, userId).length > 0;
-    if (owned) this.sql.exec(`DELETE FROM passkeys WHERE id = ?`, id);
-    return owned;
+  /** Remove one of this account's passkeys — never its last, checked in the
+   * same step, so two removals at once can't leave it with none. The key
+   * may be gone because its device was, so every other session goes too:
+   * only `keepTokenHash`, the session doing the removing, stays signed in. */
+  deletePasskey(userId: string, id: string, keepTokenHash: string | null = null): "removed" | "missing" | "last" {
+    return this.atomic(() => {
+      const keys = this.rows<{ id: string }>(`SELECT id FROM passkeys WHERE user_id = ?`, userId);
+      if (!keys.some((k) => k.id === id)) return "missing";
+      if (keys.length === 1) return "last";
+      this.sql.exec(`DELETE FROM passkeys WHERE id = ?`, id);
+      this.sql.exec(`DELETE FROM sessions WHERE user_id = ? AND token_hash IS NOT ?`, userId, keepTokenHash);
+      return "removed";
+    });
   }
 
-  /** Recovery: the lost device may be in someone else's hands, passkey and all. */
-  deletePasskeysFor(userId: string): void {
-    this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, userId);
+  /** Recovery: the lost device may be in someone else's hands, passkey and
+   * all. Signs the account out everywhere and takes every passkey away, in
+   * one step, so nothing signs in between the two. */
+  revokeEverything(userId: string): void {
+    this.atomic(() => {
+      this.sql.exec(`DELETE FROM sessions WHERE user_id = ?`, userId);
+      this.sql.exec(`DELETE FROM passkeys WHERE user_id = ?`, userId);
+    });
   }
 
-  /** After a successful assertion: the authenticator's new counter, and when. */
+  /** After a successful assertion: the authenticator's new counter, and when.
+   * The counter only moves forward, whatever order two sign-ins land in. */
   passkeyUsed(id: string, counter: number, now: number): void {
-    this.sql.exec(`UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?`, counter, now, id);
+    this.sql.exec(
+      `UPDATE passkeys SET counter = MAX(counter, ?), last_used_at = ? WHERE id = ?`,
+      counter,
+      now,
+      id,
+    );
   }
 
   // ---- sessions ----------------------------------------------------------
@@ -426,8 +512,9 @@ export class AuthStore {
   // ---- one-time codes ----------------------------------------------------
 
   /** Store a code for `email`, replacing any outstanding one for the same
-   * purpose. "rate-limited" once this email has been sent CODES_PER_HOUR codes
-   * in the last hour, whoever asked for them. */
+   * purpose and account. "rate-limited" past CODES_PER_HOUR: for recovery,
+   * codes sent to this email whoever asked; for verification, codes this
+   * account (`userId`) asked for, whatever the address. */
   issueCode(
     email: string,
     purpose: CodePurpose,
@@ -437,7 +524,9 @@ export class AuthStore {
   ): "ok" | "rate-limited" {
     const normalized = normalizeEmail(email);
     this.sql.exec(`DELETE FROM codes WHERE expires_at <= ?`, now);
-    if (this.noteCodeRequest(normalized, now) === "rate-limited") return "rate-limited";
+    if (this.noteCodeRequest(normalized, now, purpose, userId) === "rate-limited") return "rate-limited";
+    // An email recovers one account, so it has one live recovery code.
+    if (purpose === "recover") this.sql.exec(`DELETE FROM codes WHERE email = ? AND purpose = 'recover'`, normalized);
     this.sql.exec(
       `INSERT OR REPLACE INTO codes (email, purpose, user_id, code_hash, expires_at, attempts) VALUES (?, ?, ?, ?, ?, 0)`,
       normalized,
@@ -449,48 +538,86 @@ export class AuthStore {
     return "ok";
   }
 
-  /** Count a request for a code to `email` against its hourly cap, sending
-   * nothing. issueCode does this itself; call it alone where a code must look
-   * sent but isn't (someone else's email), so the cap can't tell them apart. */
-  noteCodeRequest(email: string, now: number): "ok" | "rate-limited" {
+  /** Count a request for a code against its hourly cap, sending nothing.
+   * issueCode does this itself; call it alone where a code must look sent but
+   * isn't — recovery for an email with no account, verification of someone
+   * else's — so the cap can't tell the two apart. `requester` is the account
+   * asking for a verification code; recovery requests have none. */
+  noteCodeRequest(
+    email: string,
+    now: number,
+    purpose: CodePurpose = "recover",
+    requester: string | null = null,
+  ): "ok" | "rate-limited" {
     const normalized = normalizeEmail(email);
     this.sql.exec(`DELETE FROM code_log WHERE at <= ?`, now - HOUR);
-    const [{ n }] = this.rows<{ n: number }>(`SELECT COUNT(*) AS n FROM code_log WHERE email = ?`, normalized) as [
-      { n: number },
-    ];
+    const [{ n }] = (
+      purpose === "recover"
+        ? this.rows(`SELECT COUNT(*) AS n FROM code_log WHERE email = ? AND purpose = 'recover'`, normalized)
+        : this.rows(`SELECT COUNT(*) AS n FROM code_log WHERE user_id = ? AND purpose = ?`, requester, purpose)
+    ) as [{ n: number }];
     if (n >= CODES_PER_HOUR) return "rate-limited";
-    this.sql.exec(`INSERT INTO code_log (email, at) VALUES (?, ?)`, normalized, now);
+    this.sql.exec(
+      `INSERT INTO code_log (email, at, purpose, user_id) VALUES (?, ?, ?, ?)`,
+      normalized,
+      now,
+      purpose,
+      purpose === "recover" ? null : requester,
+    );
     return "ok";
   }
 
   /** Check a code. Success burns it; every failure counts, and the code dies
    * at CODE_MAX_ATTEMPTS — six digits survive five guesses, not a million.
-   * Failures also count against the email across codes (MAX_CODE_FAILURES a
-   * day), or reissuing would make the cap meaningless. */
-  redeemCode(email: string, purpose: CodePurpose, codeHash: string, now: number): { userId: string } | null {
+   * Failures also count across codes (MAX_CODE_FAILURES a day), or reissuing
+   * would make the cap meaningless: per email for recovery, per account for
+   * verification, whose codes are looked up by the account (`userId`) too. */
+  redeemCode(
+    email: string,
+    purpose: CodePurpose,
+    codeHash: string,
+    now: number,
+    userId: string | null = null,
+  ): { userId: string } | null {
     const normalized = normalizeEmail(email);
+    const recover = purpose === "recover";
     this.sql.exec(`DELETE FROM code_failures WHERE at <= ?`, now - DAY);
-    const [{ failures, everyone }] = this.rows<{ failures: number; everyone: number }>(
-      `SELECT SUM(email = ?) AS failures, COUNT(*) AS everyone FROM code_failures`,
-      normalized,
+    const [{ failures, everyone }] = (
+      recover
+        ? this.rows(
+            `SELECT SUM(email = ?) AS failures, COUNT(*) AS everyone FROM code_failures WHERE purpose = 'recover'`,
+            normalized,
+          )
+        : this.rows(
+            `SELECT COUNT(*) AS failures, 0 AS everyone FROM code_failures WHERE purpose = ? AND user_id = ?`,
+            purpose,
+            userId,
+          )
     ) as [{ failures: number | null; everyone: number }];
     if ((failures ?? 0) >= MAX_CODE_FAILURES || everyone >= MAX_GLOBAL_CODE_FAILURES) return null;
+    const match = recover ? `email = ? AND purpose = ?` : `email = ? AND purpose = ? AND user_id = ?`;
+    const key = recover ? [normalized, purpose] : [normalized, purpose, userId];
     const [row] = this.rows<{ user_id: string; code_hash: string; expires_at: number; attempts: number }>(
-      `SELECT user_id, code_hash, expires_at, attempts FROM codes WHERE email = ? AND purpose = ?`,
-      normalized,
-      purpose,
+      `SELECT user_id, code_hash, expires_at, attempts FROM codes WHERE ${match}`,
+      ...key,
     );
     if (!row) return null;
     if (row.expires_at <= now || row.attempts >= CODE_MAX_ATTEMPTS) {
-      this.sql.exec(`DELETE FROM codes WHERE email = ? AND purpose = ?`, normalized, purpose);
+      this.sql.exec(`DELETE FROM codes WHERE ${match}`, ...key);
       return null;
     }
     if (row.code_hash !== codeHash) {
-      this.sql.exec(`INSERT INTO code_failures (email, at) VALUES (?, ?)`, normalized, now);
-      this.sql.exec(`UPDATE codes SET attempts = attempts + 1 WHERE email = ? AND purpose = ?`, normalized, purpose);
+      this.sql.exec(
+        `INSERT INTO code_failures (email, at, purpose, user_id) VALUES (?, ?, ?, ?)`,
+        normalized,
+        now,
+        purpose,
+        recover ? null : userId,
+      );
+      this.sql.exec(`UPDATE codes SET attempts = attempts + 1 WHERE ${match}`, ...key);
       return null;
     }
-    this.sql.exec(`DELETE FROM codes WHERE email = ? AND purpose = ?`, normalized, purpose);
+    this.sql.exec(`DELETE FROM codes WHERE ${match}`, ...key);
     return { userId: row.user_id };
   }
 }
