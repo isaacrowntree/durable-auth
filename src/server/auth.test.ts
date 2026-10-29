@@ -397,6 +397,22 @@ describe("registering a passkey that's already in use", () => {
     const login = await call("login-options", { body: {} });
     expect((await call("login-verify", { body: { response: passkeyResponse("key-1", login.body.challenge) } })).body.account.name).toBe("Isaac");
   });
+
+  // Both pass the early check before either is stored; the store's single
+  // call decides, and the loser leaves nothing behind.
+  it("lets one of two simultaneous sign-ups have it, and only one", async () => {
+    const first = await call("register-options", { body: { name: "One" } });
+    const second = await call("register-options", { body: { name: "Two" } });
+    const results = await Promise.all(
+      [first, second].map((o, i) =>
+        call("register-verify", {
+          body: { name: ["One", "Two"][i], profile: PROFILE, response: passkeyResponse("key-same", o.body.challenge) },
+        }),
+      ),
+    );
+    expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
+    expect(results.find((r) => r.status === 400)!.body.error).toBe("This passkey is already in use");
+  });
 });
 
 describe("rate limits", () => {
