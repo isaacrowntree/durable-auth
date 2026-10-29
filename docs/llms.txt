@@ -1,6 +1,6 @@
 # durable-auth
 
-> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.1.0.
+> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.2.0.
 
 durable-auth is small on purpose: one Durable Object, about 1,500 lines of TypeScript, and SimpleWebAuthn (`@simplewebauthn/server` and `@simplewebauthn/browser`, its only dependencies) for the passkey cryptography. A Durable Object runs one request at a time with its own SQLite, so "check this code, then burn it" and "check this challenge, then consume it" are atomic without transactions, and "this email belongs to one account" is a plain UNIQUE constraint. Every account lives in ONE instance (`idFromName("auth")`).
 
@@ -23,6 +23,7 @@ Install: `npm i durable-auth`. Two entry points: `durable-auth/server` and `dura
   - `parseProfile(input, current, patch)` — validate app account data; default any JSON object ≤ 4 KB; throw `AuthInputError` to refuse with a 400.
   - `allowSignup(req, { name, body })` — default everyone; return false to refuse (invites, waitlist, domain).
   - `sendCode(to, code, purpose)` — default off (then email recovery is off). `cloudflareEmail(env.EMAIL, { from, appName })` is one.
+  - `codeSecret` — required with `sendCode`; a Worker secret, 32+ characters (`openssl rand -base64 32`). Codes are stored as HMAC-SHA-256 under it. Changing it retires codes already sent.
   - `turnstile` — `{ siteKey, verify: turnstileVerifier(secret) }`, on sign-up and recovery.
   - `rateLimit(key)` → `Promise<boolean>`; keys look like `login:<ip>`. `rateLimitBinding(env.AUTH_LIMITER)` is one (fails open).
   - `onDeleteAccount(userId)` — remove the app's own data before the account goes; if it throws, the account survives.

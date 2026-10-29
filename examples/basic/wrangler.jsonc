@@ -13,7 +13,10 @@
   "send_email": [{ "name": "EMAIL" }],
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 30, "period": 60 } }],
   "vars": {
-    "EMAIL_FROM": "noreply@example.com"
+    "EMAIL_FROM": "noreply@example.com",
+    // Local only. A real deploy keeps this out of the config:
+    // `openssl rand -base64 32 | wrangler secret put CODE_SECRET`.
+    "CODE_SECRET": "example-only-not-a-secret-example-only"
   },
   "dev": { "port": 8790 }
 }

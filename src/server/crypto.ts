@@ -1,9 +1,10 @@
 /** The secrets sign-in hands out, and the hashes it keeps instead.
  *
  * Session tokens are 256 random bits, so a plain SHA-256 is all the storage
- * needs: nobody brute-forces that space. Codes are only six digits, so their
- * hash is salted with what they're for — and what actually protects them is
- * the attempt cap in the store, not the hash. */
+ * needs: nobody brute-forces that space. Codes are only six digits, so a
+ * plain hash of one is a million guesses from reversed: they're keyed with a
+ * secret the store never sees. Online, what protects them is the attempt cap
+ * in the store. */
 
 export function randomToken(bytes = 32): string {
   return base64url(crypto.getRandomValues(new Uint8Array(bytes)));
@@ -30,8 +31,17 @@ export async function sha256(text: string): Promise<string> {
   return base64url(new Uint8Array(digest));
 }
 
-export function hashCode(email: string, purpose: string, code: string): Promise<string> {
-  return sha256(`${purpose}:${email.trim().toLowerCase()}:${code.trim()}`);
+/** The key codes are hashed under. It lives in a Worker secret, outside the
+ * store, so a copy of the store alone can't try the million codes offline. */
+export function codeKey(secret: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ]);
+}
+
+export async function hashCode(key: CryptoKey, email: string, purpose: string, code: string): Promise<string> {
+  const text = `${purpose}:${email.trim().toLowerCase()}:${code.trim()}`;
+  return base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text))));
 }
 
 export function base64url(bytes: Uint8Array): string {

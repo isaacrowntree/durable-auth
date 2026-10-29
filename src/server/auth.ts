@@ -14,7 +14,7 @@ import {
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 import { SessionCookie } from "./cookie";
-import { hashCode, newAccountId, randomToken, sha256, sixDigitCode } from "./crypto";
+import { codeKey, hashCode, newAccountId, randomToken, sha256, sixDigitCode } from "./crypto";
 import { authStoreFrom, type AuthApi, type AuthNamespace } from "./stub";
 import { normalizeEmail, type AccountView, type CodePurpose, type Profile, type StoredPasskey } from "./store";
 
@@ -60,6 +60,10 @@ export interface AuthOptions<P extends Profile = Profile> {
   /** Send a one-time code. Absent: recovery by email is off, and `config`
    * says so. See `cloudflareEmail` for Cloudflare Email Sending. */
   sendCode?: (to: string, code: string, purpose: CodePurpose) => Promise<void>;
+  /** Required with `sendCode`: the key emailed codes are hashed under, from
+   * a Worker secret (`openssl rand -base64 32`), at least 32 characters.
+   * Changing it invalidates codes already sent, nothing else. */
+  codeSecret?: string;
   /** Cloudflare Turnstile on sign-up and recovery. See `turnstileVerifier`. */
   turnstile?: { siteKey: string; verify: (token: string, ip: string | null) => Promise<boolean> };
   /** true = allowed. Keys look like "login:<ip>". See `rateLimitBinding`. */
@@ -128,6 +132,12 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
   const now = options.now ?? Date.now;
   const reauthWindow = options.reauthWindowMs ?? REAUTH_WINDOW_MS;
   const maxName = options.maxNameLength ?? 64;
+  if (options.sendCode && (options.codeSecret?.length ?? 0) < 32) {
+    throw new Error("durable-auth: sendCode needs codeSecret, at least 32 characters (openssl rand -base64 32)");
+  }
+  let codeHashKey: Promise<CryptoKey> | undefined;
+  const codeHash = (email: string, purpose: CodePurpose, code: string) =>
+    (codeHashKey ??= codeKey(options.codeSecret!)).then((k) => hashCode(k, email, purpose, code));
   const parseProfile = options.parseProfile ?? (defaultProfile as unknown as NonNullable<AuthOptions<P>["parseProfile"]>);
 
   // ---- helpers ------------------------------------------------------------
@@ -280,7 +290,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
 
   async function sendCodeFor(email: string, purpose: CodePurpose, userId: string): Promise<void> {
     const code = sixDigitCode();
-    const issued = await store.issueCode(email, purpose, userId, await hashCode(email, purpose, code), now());
+    const issued = await store.issueCode(email, purpose, userId, await codeHash(email, purpose, code), now());
     if (issued === "ok") await options.sendCode!(email, code, purpose);
   }
 
@@ -467,7 +477,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const body = await json<{ email?: unknown; code?: unknown }>(req);
       const email = parseEmail(body.email);
       const code = parseCode(body.code);
-      const redeemed = await store.redeemCode(email, "recover", await hashCode(email, "recover", code), now());
+      const redeemed = await store.redeemCode(email, "recover", await codeHash(email, "recover", code), now());
       if (!redeemed) fail(400, "That code is wrong or has expired");
 
       // Recovering means a device was lost — possibly stolen, passkey and all.
@@ -497,7 +507,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const mine = !owner || owner.id === s.userId;
       const code = sixDigitCode();
       const issued = mine
-        ? await store.issueCode(email, "verify-email", s.userId, await hashCode(email, "verify-email", code), now())
+        ? await store.issueCode(email, "verify-email", s.userId, await codeHash(email, "verify-email", code), now())
         : await store.noteCodeRequest(email, now());
       if (issued === "rate-limited") fail(429, "Too many codes sent to that email — try again in an hour");
       if (mine) {
@@ -515,7 +525,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const body = await json<{ email?: unknown; code?: unknown }>(req);
       const email = parseEmail(body.email);
       const code = parseCode(body.code);
-      const redeemed = await store.redeemCode(email, "verify-email", await hashCode(email, "verify-email", code), now());
+      const redeemed = await store.redeemCode(email, "verify-email", await codeHash(email, "verify-email", code), now());
       if (redeemed?.userId !== userId) fail(400, "That code is wrong or has expired");
 
       const account = await store.setEmail(userId, email);

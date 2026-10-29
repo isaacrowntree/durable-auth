@@ -50,7 +50,7 @@
         "programmingLanguage": "TypeScript",
         "runtimePlatform": "Cloudflare Workers",
         "license": "https://opensource.org/licenses/MIT",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "author": { "@type": "Person", "name": "Isaac Rowntree", "url": "https://isaacrowntree.com/" },
         "keywords": "cloudflare, durable objects, workers, passkeys, webauthn, authentication, passwordless, sessions, step-up, account recovery"
       }
@@ -294,6 +294,7 @@
       store: env.AUTH,
       rpName: <span class="tok-s">"My App"</span>,
       sendCode: <span class="tok-f">cloudflareEmail</span>(env.EMAIL, { from: <span class="tok-s">"noreply@myapp.com"</span>, appName: <span class="tok-s">"My App"</span> }),
+      codeSecret: env.CODE_SECRET, <span class="tok-c">// openssl rand -base64 32 | wrangler secret put CODE_SECRET</span>
       rateLimit: <span class="tok-f">rateLimitBinding</span>(env.AUTH_LIMITER),
       waitUntil: (work) =&gt; ctx.<span class="tok-f">waitUntil</span>(work),
     });
@@ -389,6 +390,7 @@
                 <tr><th scope="row">parseProfile</th><td class="mono">any object ≤ 4 KB</td><td>Validate your own account data; throw <code>AuthInputError</code> to refuse.</td></tr>
                 <tr><th scope="row">allowSignup</th><td class="mono">everyone</td><td><code>(req, { name, body }) =&gt; boolean</code>: invite codes, a waitlist, a domain.</td></tr>
                 <tr><th scope="row">sendCode</th><td class="mono">off</td><td><code>(to, code, purpose) =&gt; Promise&lt;void&gt;</code>; <code>cloudflareEmail(...)</code> is one. Off means no email recovery.</td></tr>
+                <tr><th scope="row">codeSecret</th><td class="mono">required with sendCode</td><td>A Worker secret of 32+ characters that emailed codes are hashed under, so a copy of the store can't be used to try codes offline. Changing it retires codes already sent.</td></tr>
                 <tr><th scope="row">turnstile</th><td class="mono">off</td><td><code>{ siteKey, verify: turnstileVerifier(secret) }</code>, on sign-up and recovery.</td></tr>
                 <tr><th scope="row">rateLimit</th><td class="mono">off</td><td><code>(key) =&gt; Promise&lt;boolean&gt;</code>; <code>rateLimitBinding(...)</code> is one. Keys look like <code>login:&lt;ip&gt;</code>.</td></tr>
                 <tr><th scope="row">onDeleteAccount</th><td class="mono">none</td><td>Remove your app's data for the user before the account goes. If it throws, the account survives to retry.</td></tr>

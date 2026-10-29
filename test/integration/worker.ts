@@ -86,6 +86,7 @@ export default {
       now: () => Date.now() + clockOffset,
       webauthn,
       sendCode: async (to, code) => void sent.push({ to, code }),
+      codeSecret: "integration-code-secret-integration",
       onDeleteAccount: async (userId) => void deleted.push(userId),
     });
     return (await auth.handle(req)) ?? new Response("Not found", { status: 404 });

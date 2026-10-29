@@ -3,9 +3,10 @@ import { memorySql } from "../../test/sqlite";
 import { AuthInputError, createAuth, type Auth, type AuthOptions, type WebAuthn } from "./auth";
 import { AuthStore } from "./store";
 import { asyncStore } from "./stub";
-import { base64url, hashCode, sha256 } from "./crypto";
+import { base64url, codeKey, hashCode, sha256 } from "./crypto";
 
 const ORIGIN = "https://app.test";
+const SECRET = "test-code-secret-test-code-secret";
 const PROFILE = { unit: "kg", plan: "5x5" };
 const MINUTE = 60 * 1000;
 
@@ -58,6 +59,7 @@ beforeEach(() => {
     now: () => t,
     webauthn: fakeWebAuthn(),
     sendCode: async (to, code, purpose) => void sent.push({ to, code, purpose }),
+    codeSecret: SECRET,
     onDeleteAccount: vi.fn(async () => {}),
   };
   rebuild();
@@ -278,6 +280,32 @@ describe("recovering an account", () => {
     const { code } = sent.pop()!;
     const wrong = code === "000000" ? "111111" : "000000";
     expect((await call("recover-verify", { body: { email: "isaac@example.com", code: wrong } })).status).toBe(400);
+  });
+
+  // A copy of the store alone mustn't be enough to try all million codes
+  // offline: what it keeps is keyed with a secret it never sees.
+  it("keeps only a keyed hash of the code", async () => {
+    await accountWithEmail();
+    await call("recover-start", { body: { email: "isaac@example.com" } });
+    const { code } = sent.pop()!;
+    expect(raw.redeemCode("isaac@example.com", "recover", await sha256(`recover:isaac@example.com:${code}`), t)).toBeNull();
+    expect((await call("recover-verify", { body: { email: "isaac@example.com", code } })).status).toBe(200);
+  });
+
+  it("retires codes already sent when codeSecret changes", async () => {
+    await accountWithEmail();
+    await call("recover-start", { body: { email: "isaac@example.com" } });
+    const { code } = sent.pop()!;
+    options.codeSecret = "another-code-secret-another-code-secret";
+    rebuild();
+    expect((await call("recover-verify", { body: { email: "isaac@example.com", code } })).status).toBe(400);
+  });
+
+  it("won't send codes without a codeSecret of at least 32 characters", () => {
+    for (const codeSecret of [undefined, "", "too-short"]) {
+      expect(() => createAuth({ ...options, codeSecret })).toThrow(/codeSecret/);
+    }
+    expect(() => createAuth({ ...options, sendCode: undefined, codeSecret: undefined })).not.toThrow();
   });
 
   it("lets the recovered account add a passkey for this device", async () => {
@@ -851,7 +879,13 @@ describe("whatever's left of a deleted account", () => {
   });
 
   it("a recovery code signs into nothing", async () => {
-    raw.issueCode("gone@example.com", "recover", "u_gone", await hashCode("gone@example.com", "recover", "123456"), t);
+    raw.issueCode(
+      "gone@example.com",
+      "recover",
+      "u_gone",
+      await hashCode(await codeKey(SECRET), "gone@example.com", "recover", "123456"),
+      t,
+    );
     const res = await call("recover-verify", { body: { email: "gone@example.com", code: "123456" } });
     expect(res).toMatchObject({ status: 400, body: { error: "Account not found" } });
     expect(res.cookie).toBeUndefined();

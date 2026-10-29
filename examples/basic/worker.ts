@@ -16,6 +16,7 @@ interface Env {
   AUTH: DurableObjectNamespace<Auth>;
   EMAIL: EmailBinding;
   EMAIL_FROM: string;
+  CODE_SECRET: string;
   AUTH_LIMITER: RateLimitBinding;
   /** Only the end-to-end suite sets this, to make step-up testable. */
   REAUTH_WINDOW_MS?: string;
@@ -27,6 +28,7 @@ export default {
       store: env.AUTH,
       rpName: "durable-auth example",
       sendCode: cloudflareEmail(env.EMAIL, { from: env.EMAIL_FROM, appName: "durable-auth example" }),
+      codeSecret: env.CODE_SECRET,
       rateLimit: rateLimitBinding(env.AUTH_LIMITER),
       waitUntil: (work) => ctx.waitUntil(work),
       reauthWindowMs: env.REAUTH_WINDOW_MS ? Number(env.REAUTH_WINDOW_MS) : undefined,

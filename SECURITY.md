@@ -30,9 +30,11 @@ latest release before reporting.
 
 - Session tokens: 32 random bytes; the store keeps `SHA-256(token)` only.
 - Codes: six digits, rejection-sampled from 32-bit values; stored as
-  `SHA-256(purpose:email:code)`. The attempt caps (5 a code, 10 a day per
+  `HMAC-SHA-256(codeSecret, purpose:email:code)`. The key is a Worker
+  secret the store never holds, so a copy of the store can't be used to try
+  the million codes offline. Online, the attempt caps (5 a code, 10 a day per
   email, 1,000 a day across all emails, 5 codes an hour per email) are the
-  protection, not the hash. Changing the recovery email retires codes sent
+  protection. Changing the recovery email retires codes sent
   to the old one.
 - Challenges: single use, deleted on first sight, bound to a purpose and (for
   registration, adding a passkey and step-up) to an account.

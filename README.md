@@ -71,6 +71,7 @@ export default {
       store: env.AUTH,
       rpName: "My App",
       sendCode: cloudflareEmail(env.EMAIL, { from: "noreply@myapp.com", appName: "My App" }),
+      codeSecret: env.CODE_SECRET, // openssl rand -base64 32 | wrangler secret put CODE_SECRET
       rateLimit: rateLimitBinding(env.AUTH_LIMITER),
       waitUntil: (work) => ctx.waitUntil(work),
     });
@@ -142,6 +143,7 @@ when the user simply dismissed the passkey prompt.
 | `parseProfile` | any object ≤ 4 KB | validate your own account data; throw `AuthInputError` to refuse |
 | `allowSignup` | everyone | `(req, { name }) => boolean`: invite codes, a waitlist, a domain |
 | `sendCode` | off | `(to, code, purpose) => Promise<void>`; `cloudflareEmail(...)` is one |
+| `codeSecret` | | required with `sendCode`: a Worker secret of 32+ characters that codes are hashed under |
 | `turnstile` | off | `{ siteKey, verify: turnstileVerifier(secret) }` |
 | `rateLimit` | off | `(key) => Promise<boolean>`; `rateLimitBinding(...)` is one |
 | `onDeleteAccount` | | remove your app's data for the user before the account goes |
