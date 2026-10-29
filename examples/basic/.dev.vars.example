@@ -1,0 +1,4 @@
+# Local development only: `npm run example` and the e2e suite. Never deploy
+# this value; a real deploy sets its own:
+#   openssl rand -base64 32 | npx wrangler secret put CODE_SECRET
+CODE_SECRET=example-only-not-a-secret-example-only

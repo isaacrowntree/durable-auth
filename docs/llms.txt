@@ -1,6 +1,6 @@
 # durable-auth
 
-> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.2.0.
+> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.3.0.
 
 durable-auth is small on purpose: one Durable Object, about 1,500 lines of TypeScript, and SimpleWebAuthn (`@simplewebauthn/server` and `@simplewebauthn/browser`, its only dependencies) for the passkey cryptography. A Durable Object runs one request at a time with its own SQLite, so "check this code, then burn it" and "check this challenge, then consume it" are atomic without transactions, and "this email belongs to one account" is a plain UNIQUE constraint. Every account lives in ONE instance (`idFromName("auth")`).
 
@@ -24,13 +24,13 @@ Install: `npm i durable-auth`. Two entry points: `durable-auth/server` and `dura
   - `allowSignup(req, { name, body })` — default everyone; return false to refuse (invites, waitlist, domain).
   - `sendCode(to, code, purpose)` — default off (then email recovery is off). `cloudflareEmail(env.EMAIL, { from, appName })` is one.
   - `codeSecret` — required with `sendCode`; a Worker secret, 32+ characters (`openssl rand -base64 32`). Codes are stored as HMAC-SHA-256 under it. Changing it retires codes already sent.
-  - `turnstile` — `{ siteKey, verify: turnstileVerifier(secret) }`, on sign-up and recovery.
+  - `turnstile` — `{ siteKey, verify: turnstileVerifier(secret, { hostnames?, checkAction? }) }`, on sign-up and recovery. `verify(token, ip, action)` gets `"signup"` or `"recover"`; with `checkAction`, render the widget with that `data-action`.
   - `rateLimit(key)` → `Promise<boolean>`; keys look like `login:<ip>`. `rateLimitBinding(env.AUTH_LIMITER)` is one (fails open).
   - `onDeleteAccount(userId)` — remove the app's own data before the account goes; if it throws, the account survives.
   - `waitUntil(work)` — pass `ctx.waitUntil`; without it recovery sends before answering and leaks timing.
   - `reauthWindowMs` — default 5 minutes; how recent a passkey (or emailed code) must be for step-up.
   - `maxNameLength` — default 64.
-- Also exported: `AuthInputError`, `AuthStore`, `authStoreFrom`, `asyncStore` (tests), `normalizeEmail`, `SCHEMA_VERSION`, `cloudflareEmail`, `turnstileVerifier`, `rateLimitBinding`.
+- Also exported: `AuthInputError`, `AuthStore`, `authStoreFrom`, `asyncStore` (tests), `normalizeEmail`, `SCHEMA_VERSION`, `cloudflareEmail`, `turnstileVerifier`, `rateLimitBinding`, `sameOrigin(req, origins?)` (the origin rule for your own routes), `rateLimitSubject(ip)` (IPv6 folded to /64).
 
 ## Routes (all JSON, under basePath)
 
@@ -43,7 +43,7 @@ Every POST/PUT must carry an allowed `Origin` (or `Sec-Fetch-Site: same-origin`)
 - `POST reauth-options` → `POST reauth-verify` — step-up
 - `GET passkeys` — the account's passkeys, no key material
 - `POST passkey-options` → `POST passkey-verify` — add a passkey [step-up]
-- `POST passkey-delete` — remove one, never the last [step-up]
+- `POST passkey-delete` — remove one, never the last; signs out every other session [step-up]
 - `POST recover-start` → `POST recover-verify` — recovery by emailed code
 - `POST email-start` → `POST email-verify` — set the recovery email [step-up]
 - `PUT profile` — name, and a partial profile update
@@ -63,8 +63,9 @@ Step-up: a session whose `verifiedAt` is older than `reauthWindowMs` gets `403 {
 
 ## Recovery and its caps
 
-- Six-digit codes, rejection-sampled, stored as `SHA-256(purpose:email:code)`, 10-minute expiry.
-- 5 guesses a code; 10 wrong guesses a day per email (across codes); 1,000 wrong guesses a day across all emails; 5 codes an hour per email. About one chance in a thousand a day of any account falling to guessing.
+- Six-digit codes, rejection-sampled, stored as `HMAC-SHA-256(codeSecret, purpose:email:code)`, 10-minute expiry.
+- Recovery: 5 guesses a code; 10 wrong guesses a day per email (across codes); 1,000 wrong guesses a day across all emails; 5 codes an hour per email, counted whether or not the email has an account. About one chance in a thousand a day of any account falling to guessing.
+- Adding an email (verification): codes belong to the account that asked; 5 guesses a code, 10 wrong a day and 5 codes an hour per account. Never counted against recovery's caps.
 - `recover-verify` signs every session out and revokes every passkey, then signs in here; call `addPasskey()` next.
 - `recover-start` answers `{ ok: true }` whether or not the email has an account; with `waitUntil` the lookup and send happen after the response. Adding someone else's email answers the same way and sends nothing.
 - Changing the recovery email retires codes sent to the old one.

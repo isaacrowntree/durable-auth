@@ -53,7 +53,7 @@ which is the one part nobody should write themselves.
 | **Passkeys** | discoverable (no username), user verification required, single-use challenges bound to their purpose and account |
 | **Sessions** | 256-bit tokens in an `HttpOnly`, `SameSite=Lax`, `__Host-` cookie; only a SHA-256 hash is stored; sliding one-year expiry |
 | **Step-up** | deleting the account, changing the recovery email, and adding or removing a passkey need a passkey (or, just after recovery, the emailed code) used in the last 5 minutes. The client asks for it and retries on its own |
-| **Recovery** | six-digit codes by email, 10-minute expiry, 5 guesses a code, 5 codes an hour and 10 wrong guesses a day per email, 1,000 wrong guesses a day in all. Recovering signs every device out and revokes every passkey |
+| **Recovery** | six-digit codes by email, 10-minute expiry, 5 guesses a code, 5 codes an hour and 10 wrong guesses a day per email, 1,000 wrong guesses a day in all. Recovering signs every device out and revokes every passkey. Adding an email has its own budget, per account, so it can't spend anyone's recovery allowance |
 | **No enumeration** | "is this email registered?" can't be learned from recovery or from adding an email: the answers, the rate limits and (with `waitUntil`) the timing are the same either way |
 | **Also** | passkey list and remove, sign out other devices, a sign-up hook, per-IP rate limits, Turnstile, a daily sweep of expired rows |
 
@@ -144,7 +144,7 @@ when the user simply dismissed the passkey prompt.
 | `allowSignup` | everyone | `(req, { name }) => boolean`: invite codes, a waitlist, a domain |
 | `sendCode` | off | `(to, code, purpose) => Promise<void>`; `cloudflareEmail(...)` is one |
 | `codeSecret` | | required with `sendCode`: a Worker secret of 32+ characters that codes are hashed under |
-| `turnstile` | off | `{ siteKey, verify: turnstileVerifier(secret) }` |
+| `turnstile` | off | `{ siteKey, verify: turnstileVerifier(secret, { hostnames, checkAction }) }`; `verify` gets the form, `"signup"` or `"recover"` |
 | `rateLimit` | off | `(key) => Promise<boolean>`; `rateLimitBinding(...)` is one |
 | `onDeleteAccount` | | remove your app's data for the user before the account goes |
 | `waitUntil` | | pass it, or recovery answers before sending and leaks timing |
@@ -163,7 +163,7 @@ All JSON. POSTs must come from an allowed origin.
 | | `POST reauth-options` → `reauth-verify` | step-up |
 | | `GET passkeys` | the account's passkeys, without key material |
 | 🔒 | `POST passkey-options` → `passkey-verify` | add a passkey |
-| 🔒 | `POST passkey-delete` | remove one, never the last |
+| 🔒 | `POST passkey-delete` | remove one, never the last; signs out every other device |
 | | `POST recover-start` → `recover-verify` | recovery by email |
 | 🔒 | `POST email-start` → `email-verify` | set the recovery email |
 | | `PUT profile` | name, and a partial profile update |
@@ -186,15 +186,22 @@ What it defends against, and how:
   email, or adding its own passkey.
 - **A stolen phone.** Recover by email on another device. Every session is signed out and
   every passkey revoked, including the one on the stolen phone.
+- **A lost device that's still signed in.** Remove its passkey from another
+  device: every session but that one is signed out with it.
 - **Guessing codes.** Five guesses a code, ten a day per email and a thousand a
   day across every email: about one chance in a thousand a day of any account
   falling to guessing, at the attacker's full effort. Codes are
-  rejection-sampled and uniform.
+  rejection-sampled and uniform, and stored as an HMAC under `codeSecret`, so
+  a copy of the database alone can't be used to try them offline.
 - **Learning who has an account.** Recovery and email verification answer the
-  same way, at the same speed, whether or not the email is registered.
+  same way, at the same speed, whether or not the email is registered — and
+  their hourly caps count the same either way, so the caps can't be used to
+  tell either.
 - **CSRF.** `SameSite=Lax` keeps the cookie off cross-site POSTs, and every
   POST must carry an allowed `Origin` (or `Sec-Fetch-Site: same-origin`).
-- **Bots signing up.** Per-IP rate limits, optional Turnstile, and `allowSignup`.
+  `sameOrigin(req)` is exported, to apply the same rule to your own routes.
+- **Bots signing up.** Per-IP rate limits (an IPv6 client counts as its /64),
+  optional Turnstile, and `allowSignup`.
 
 What it doesn't do:
 
@@ -206,10 +213,13 @@ What it doesn't do:
   recover the account. Leave `sendCode` out, and recovery means a second passkey on
   another device (or a synced one).
 - **Recovery can be paused by a stranger.** The guess caps that make codes
-  safe can be spent by someone else: ten wrong guesses lock one email's
-  recovery for a day, and a flood of them locks everyone's. Rate limits and
-  Turnstile keep that expensive; it's the trade for codes that can't be
-  brute-forced.
+  safe can be spent by someone else: ten wrong recovery guesses lock one
+  email's recovery for a day, and a flood of them locks everyone's. Rate
+  limits and Turnstile keep that expensive; it's the trade for codes that
+  can't be brute-forced.
+- **Sessions in use don't expire.** A session slides a year from its last
+  use; there's no absolute lifetime. Step-up guards what matters, and
+  `logout-others` or removing a passkey ends the rest.
 - **The profile is the user's to write.** Anything a user mustn't set on
   themselves — a plan, a role — belongs in your own storage, or gets refused
   in `parseProfile`.

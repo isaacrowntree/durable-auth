@@ -50,7 +50,7 @@
         "programmingLanguage": "TypeScript",
         "runtimePlatform": "Cloudflare Workers",
         "license": "https://opensource.org/licenses/MIT",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "author": { "@type": "Person", "name": "Isaac Rowntree", "url": "https://isaacrowntree.com/" },
         "keywords": "cloudflare, durable objects, workers, passkeys, webauthn, authentication, passwordless, sessions, step-up, account recovery"
       }
@@ -391,7 +391,7 @@
                 <tr><th scope="row">allowSignup</th><td class="mono">everyone</td><td><code>(req, { name, body }) =&gt; boolean</code>: invite codes, a waitlist, a domain.</td></tr>
                 <tr><th scope="row">sendCode</th><td class="mono">off</td><td><code>(to, code, purpose) =&gt; Promise&lt;void&gt;</code>; <code>cloudflareEmail(...)</code> is one. Off means no email recovery.</td></tr>
                 <tr><th scope="row">codeSecret</th><td class="mono">required with sendCode</td><td>A Worker secret of 32+ characters that emailed codes are hashed under, so a copy of the store can't be used to try codes offline. Changing it retires codes already sent.</td></tr>
-                <tr><th scope="row">turnstile</th><td class="mono">off</td><td><code>{ siteKey, verify: turnstileVerifier(secret) }</code>, on sign-up and recovery.</td></tr>
+                <tr><th scope="row">turnstile</th><td class="mono">off</td><td><code>{ siteKey, verify: turnstileVerifier(secret, { hostnames, checkAction }) }</code>, on sign-up and recovery. <code>verify</code> is told the form: <code>"signup"</code> or <code>"recover"</code>.</td></tr>
                 <tr><th scope="row">rateLimit</th><td class="mono">off</td><td><code>(key) =&gt; Promise&lt;boolean&gt;</code>; <code>rateLimitBinding(...)</code> is one. Keys look like <code>login:&lt;ip&gt;</code>.</td></tr>
                 <tr><th scope="row">onDeleteAccount</th><td class="mono">none</td><td>Remove your app's data for the user before the account goes. If it throws, the account survives to retry.</td></tr>
                 <tr><th scope="row">waitUntil</th><td class="mono">none</td><td>Pass it, or recovery answers after sending and leaks timing.</td></tr>
@@ -430,7 +430,7 @@
                 <tr><th scope="row">POST reauth-options → reauth-verify</th><td>Step-up: confirm with one of this account's passkeys</td><td>session</td></tr>
                 <tr><th scope="row">GET passkeys</th><td>The account's passkeys, without key material</td><td>session</td></tr>
                 <tr><th scope="row">POST passkey-options → passkey-verify</th><td>Add a passkey</td><td><span class="chip">step-up</span></td></tr>
-                <tr><th scope="row">POST passkey-delete</th><td>Remove one, never the last</td><td><span class="chip">step-up</span></td></tr>
+                <tr><th scope="row">POST passkey-delete</th><td>Remove one, never the last; signs out every other device</td><td><span class="chip">step-up</span></td></tr>
                 <tr><th scope="row">POST recover-start → recover-verify</th><td>Recovery by emailed code</td><td></td></tr>
                 <tr><th scope="row">POST email-start → email-verify</th><td>Set the recovery email</td><td><span class="chip">step-up</span></td></tr>
                 <tr><th scope="row">PUT profile</th><td>Name, and a partial profile update</td><td>session</td></tr>
@@ -493,11 +493,12 @@
           <div class="split">
             <div>
               <ul class="limits limits--yes">
-                <li><span><b>Six digits, 10 minutes.</b> Rejection-sampled so every code is equally likely; stored only as <code>SHA-256(purpose:email:code)</code>.</span></li>
+                <li><span><b>Six digits, 10 minutes.</b> Rejection-sampled so every code is equally likely; stored only as <code>HMAC-SHA-256(codeSecret, purpose:email:code)</code>, so a copy of the database alone can't try them.</span></li>
                 <li><span><b>5 guesses a code.</b> Then the code is dead.</span></li>
                 <li><span><b>10 wrong guesses a day per email</b>, across every code sent to it, so asking for a new one doesn't reset the count.</span></li>
                 <li><span><b>1,000 wrong guesses a day across every email.</b> About one chance in a thousand a day of any account falling to guessing, at an attacker's full effort.</span></li>
-                <li><span><b>5 codes an hour per email</b>, whoever asks for them.</span></li>
+                <li><span><b>5 codes an hour per email</b>, whoever asks for them, and whether or not the email has an account.</span></li>
+                <li><span><b>Adding an email has its own budget.</b> Its codes belong to the account that asked, capped per account, so it can't spend anyone's recovery allowance or replace their code.</span></li>
                 <li><span><b>Recovering is a reset.</b> Every session is signed out and every passkey revoked, including the one on a stolen phone. The client adds a fresh passkey next.</span></li>
                 <li><span><b>Same answer either way.</b> <code>recover-start</code> says <code>{ ok: true }</code> whether or not the email has an account, and with <code>waitUntil</code> the lookup and the send happen after the response.</span></li>
               </ul>
@@ -553,7 +554,7 @@
                 <li><span><b>A stolen cookie or a borrowed, unlocked phone.</b> Step-up stops it deleting the account, taking the recovery email, or adding its own passkey.</span></li>
                 <li><span><b>A stolen phone.</b> Recover by email on another device: every session signed out, every passkey revoked.</span></li>
                 <li><span><b>Guessing codes.</b> 5 a code, 10 a day per email, 1,000 a day in all.</span></li>
-                <li><span><b>Learning who has an account.</b> Recovery and email verification answer the same way, at the same speed, either way.</span></li>
+                <li><span><b>Learning who has an account.</b> Recovery and email verification answer the same way, at the same speed, under caps that count the same, either way.</span></li>
                 <li><span><b>CSRF.</b> <code>SameSite=Lax</code>, and every POST must carry an allowed <code>Origin</code>.</span></li>
                 <li><span><b>Bots signing up.</b> Per-IP rate limits, optional Turnstile, and <code>allowSignup</code>.</span></li>
               </ul>
