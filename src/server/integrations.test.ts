@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { turnstileVerifier } from "./integrations";
-import { rateLimitSubject, sameOrigin } from "./auth";
+import { turnstileVerifier } from "./integrations.js";
+import { rateLimitSubject, sameOrigin } from "./auth.js";
 
 function siteverify(outcome: Record<string, unknown>) {
   vi.stubGlobal("fetch", vi.fn(async () => Response.json(outcome)));

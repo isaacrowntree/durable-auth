@@ -11,7 +11,7 @@
  * written, so a missed alarm costs nothing but a little disk. */
 
 import { DurableObject } from "cloudflare:workers";
-import { AuthStore } from "./store";
+import { AuthStore } from "./store.js";
 
 const SWEEP_EVERY_MS = 24 * 60 * 60 * 1000;
 

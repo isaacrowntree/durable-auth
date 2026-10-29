@@ -13,10 +13,10 @@ import {
   type AuthenticationResponseJSON,
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
-import { SessionCookie } from "./cookie";
-import { codeKey, hashCode, newAccountId, randomToken, sha256, sixDigitCode } from "./crypto";
-import { authStoreFrom, type AuthApi, type AuthNamespace } from "./stub";
-import { normalizeEmail, type AccountView, type CodePurpose, type Profile, type StoredPasskey } from "./store";
+import { SessionCookie } from "./cookie.js";
+import { codeKey, hashCode, newAccountId, randomToken, sha256, sixDigitCode } from "./crypto.js";
+import { authStoreFrom, type AuthApi, type AuthNamespace } from "./stub.js";
+import { normalizeEmail, type AccountView, type CodePurpose, type Profile, type StoredPasskey } from "./store.js";
 
 export interface WebAuthn {
   generateRegistrationOptions: typeof generateRegistrationOptions;

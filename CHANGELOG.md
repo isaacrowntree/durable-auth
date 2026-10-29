@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 2026-10-29
+
+- Relative imports in the published files now carry their `.js` extension,
+  so tools that resolve ESM strictly (Node, Deno, some test runners) can load
+  the package, not only bundlers.
+
 ## 0.3.0 — 2026-10-29
 
 Security fixes, from a review of the whole library:

@@ -1,7 +1,7 @@
 /** Ready-made `createAuth` options for Cloudflare's own services. Each is a
  * few lines; read them before you trust them, and swap in your own as needed. */
 
-import type { CodePurpose } from "./store";
+import type { CodePurpose } from "./store.js";
 
 /** The slice of a `send_email` binding this needs. */
 export interface EmailBinding {

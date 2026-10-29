@@ -1,6 +1,6 @@
 # durable-auth
 
-> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.3.0.
+> Passkey sign-in for Cloudflare Workers, kept in one Durable Object. Accounts, passkeys, sessions, step-up and email recovery in the Durable Object's own SQLite. No auth service, no user database, nothing to configure in a dashboard. TypeScript, MIT. Version 0.3.1.
 
 durable-auth is small on purpose: one Durable Object, about 1,500 lines of TypeScript, and SimpleWebAuthn (`@simplewebauthn/server` and `@simplewebauthn/browser`, its only dependencies) for the passkey cryptography. A Durable Object runs one request at a time with its own SQLite, so "check this code, then burn it" and "check this challenge, then consume it" are atomic without transactions, and "this email belongs to one account" is a plain UNIQUE constraint. Every account lives in ONE instance (`idFromName("auth")`).
 

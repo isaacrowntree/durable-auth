@@ -8,10 +8,10 @@ export {
   type Session,
   type TurnstileAction,
   type WebAuthn,
-} from "./auth";
-export { AuthDurableObject } from "./durable-object";
-export { cloudflareEmail, turnstileVerifier, rateLimitBinding, type EmailBinding, type RateLimitBinding } from "./integrations";
-export { authStoreFrom, asyncStore, type AuthApi, type AuthNamespace } from "./stub";
+} from "./auth.js";
+export { AuthDurableObject } from "./durable-object.js";
+export { cloudflareEmail, turnstileVerifier, rateLimitBinding, type EmailBinding, type RateLimitBinding } from "./integrations.js";
+export { authStoreFrom, asyncStore, type AuthApi, type AuthNamespace } from "./stub.js";
 export {
   AuthStore,
   normalizeEmail,
@@ -22,4 +22,4 @@ export {
   type Profile,
   type Sql,
   type Transaction,
-} from "./store";
+} from "./store.js";

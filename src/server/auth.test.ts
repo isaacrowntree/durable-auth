@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { memorySql } from "../../test/sqlite";
-import { AuthInputError, createAuth, type Auth, type AuthOptions, type WebAuthn } from "./auth";
-import { AuthStore } from "./store";
-import { asyncStore } from "./stub";
-import { base64url, codeKey, hashCode, sha256 } from "./crypto";
+import { memorySql } from "../../test/sqlite.js";
+import { AuthInputError, createAuth, type Auth, type AuthOptions, type WebAuthn } from "./auth.js";
+import { AuthStore } from "./store.js";
+import { asyncStore } from "./stub.js";
+import { base64url, codeKey, hashCode, sha256 } from "./crypto.js";
 
 const ORIGIN = "https://app.test";
 const SECRET = "test-code-secret-test-code-secret";

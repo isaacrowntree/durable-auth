@@ -18,7 +18,7 @@
 import { describe, it, expect } from "vitest";
 import fc from "fast-check";
 import { DatabaseSync } from "node:sqlite";
-import { memorySql } from "../../test/sqlite";
+import { memorySql } from "../../test/sqlite.js";
 import {
   AuthStore,
   CHALLENGE_TTL_MS,
@@ -30,7 +30,7 @@ import {
   SESSION_TTL_MS,
   type ChallengePurpose,
   type CodePurpose,
-} from "./store";
+} from "./store.js";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;

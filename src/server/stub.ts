@@ -6,7 +6,7 @@
  * so callers can't tell a DO from a local store, and tests can hand the
  * handlers a node:sqlite-backed one. */
 
-import type { AuthStore } from "./store";
+import type { AuthStore } from "./store.js";
 
 type Methods<T> = {
   [K in keyof T as T[K] extends (...args: never[]) => unknown ? K : never]: T[K];

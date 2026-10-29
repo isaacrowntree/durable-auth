@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { memorySql, memoryTransaction } from "../../test/sqlite";
+import { memorySql, memoryTransaction } from "../../test/sqlite.js";
 import {
   AuthStore,
   CHALLENGE_TTL_MS,
@@ -11,7 +11,7 @@ import {
   MAX_GLOBAL_CODE_FAILURES,
   SCHEMA_VERSION,
   SESSION_TTL_MS,
-} from "./store";
+} from "./store.js";
 
 const PROFILE = { unit: "kg", theme: "dark" };
 const DAY = 24 * 60 * 60 * 1000;
