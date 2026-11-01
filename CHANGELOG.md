@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0 — 2026-11-02
+
+Hardening from an outside review. One breaking change: `parseProfile` is
+required. The schema moves to version 4 in place on first open.
+
+- **`parseProfile` is required.** Leaving it out used to accept any JSON
+  object as the profile, so an app that kept a plan or a role there let users
+  set their own, with nothing failing anywhere. `createAuth` now throws
+  without one. The old behaviour is `looseProfile`, exported, for a profile
+  with nothing in it the user mustn't set: `createAuth({ ..., parseProfile:
+  looseProfile })`.
+- **A built-in cap on sign-ups**, `maxSignupsPerHour`, default 20 per client
+  (an IPv4 address or an IPv6 /64), counted in the auth object so it works
+  with no rate-limit binding. Over it, `register-options` answers 429. A
+  sign-up refused by Turnstile or `allowSignup` doesn't count. 0 turns it
+  off; a request with no `cf-connecting-ip` isn't counted.
+- **`sessionMaxAgeMs`**, an optional absolute session lifetime. A session
+  ends that long after sign-in however much it's used. It's checked against
+  a new `created_at`, which use never moves, so it applies to sessions
+  already signed in; a session from before this release is dated from when
+  it was last seen.
+- **`onSecurityEvent(userId, event)`**, called after a passkey is added or
+  removed, the recovery email changes (with the `previous` address), or the
+  account is recovered by email — so the app can tell the user. It runs
+  after the response with `waitUntil`; if it throws, the error is logged and
+  the change stands.
+- README: a production checklist.
+
 ## 0.3.1 — 2026-10-29
 
 - Relative imports in the published files now carry their `.js` extension,

@@ -84,6 +84,9 @@ export const MAX_CODE_FAILURES = 10;
  * never comes to that. Verification codes don't count here: they're bound to
  * the account that asked for them, so guessing at them gains nothing. */
 export const MAX_GLOBAL_CODE_FAILURES = 1000;
+/** Sign-ups started an hour per client (an IPv4 address or an IPv6 /64) —
+ * `createAuth({ maxSignupsPerHour })` overrides it. */
+export const SIGNUPS_PER_HOUR = 20;
 
 /** Version 1 is the schema as first shipped; later versions are ALTERs on top
  * (MIGRATIONS), so a database from any earlier release opens in place. */
@@ -184,6 +187,20 @@ const MIGRATIONS: string[][] = [
     `CREATE INDEX IF NOT EXISTS code_failures_user ON code_failures(user_id, at)`,
     `CREATE INDEX IF NOT EXISTS challenges_expiry ON challenges(expires_at)`,
   ],
+  [
+    // When a session began, for an absolute lifetime. A session from before
+    // this is dated from when it was last seen: the latest it can have begun
+    // that's still known, and the kindest to the people holding one.
+    `ALTER TABLE sessions ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`,
+    `UPDATE sessions SET created_at = last_seen`,
+    // Sign-ups started, per client, for the built-in hourly cap.
+    `CREATE TABLE IF NOT EXISTS signup_log (
+      subject TEXT NOT NULL,
+      at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS signup_log_subject ON signup_log(subject, at)`,
+    `CREATE INDEX IF NOT EXISTS signup_log_at ON signup_log(at)`,
+  ],
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length + 1;
@@ -246,6 +263,22 @@ export class AuthStore {
     this.sql.exec(`DELETE FROM codes WHERE expires_at <= ?`, now);
     this.sql.exec(`DELETE FROM code_log WHERE at <= ?`, now - HOUR);
     this.sql.exec(`DELETE FROM code_failures WHERE at <= ?`, now - DAY);
+    this.sql.exec(`DELETE FROM signup_log WHERE at <= ?`, now - HOUR);
+  }
+
+  // ---- sign-up ----------------------------------------------------------
+
+  /** Count a sign-up started by `subject` (see `rateLimitSubject`) against
+   * its hourly cap. Every account lands in this one object, so this is what
+   * keeps one client from filling it. */
+  noteSignup(subject: string, now: number, perHour: number): "ok" | "rate-limited" {
+    this.sql.exec(`DELETE FROM signup_log WHERE at <= ?`, now - HOUR);
+    const [{ n }] = this.rows<{ n: number }>(`SELECT COUNT(*) AS n FROM signup_log WHERE subject = ?`, subject) as [
+      { n: number },
+    ];
+    if (n >= perHour) return "rate-limited";
+    this.sql.exec(`INSERT INTO signup_log (subject, at) VALUES (?, ?)`, subject, now);
+    return "ok";
   }
 
   // ---- challenges --------------------------------------------------------
@@ -458,29 +491,40 @@ export class AuthStore {
 
   // ---- sessions ----------------------------------------------------------
 
-  /** A new session has just proved its user, so it starts verified. */
-  createSession(tokenHash: string, userId: string, now: number): void {
+  /** A new session has just proved its user, so it starts verified.
+   * `maxAgeMs` caps its life however much it's used — see `session`. */
+  createSession(tokenHash: string, userId: string, now: number, maxAgeMs: number | null = null): void {
     this.sql.exec(`DELETE FROM sessions WHERE expires_at <= ?`, now);
     this.sql.exec(
-      `INSERT INTO sessions (token_hash, user_id, expires_at, last_seen, verified_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO sessions (token_hash, user_id, expires_at, last_seen, verified_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
       tokenHash,
       userId,
-      now + SESSION_TTL_MS,
+      expiry(now, now, maxAgeMs),
+      now,
       now,
       now,
     );
   }
 
   /** The session's account, sliding its expiry forward. A session in use
-   * never expires; one left alone for SESSION_TTL_MS does. The write is at
-   * most daily — an app may read a session on every request. */
-  session(tokenHash: string, now: number): SessionInfo | null {
-    const [row] = this.rows<{ user_id: string; expires_at: number; last_seen: number; verified_at: number }>(
-      `SELECT user_id, expires_at, last_seen, verified_at FROM sessions WHERE token_hash = ?`,
+   * never expires, unless `maxAgeMs` is given: then it ends that long after
+   * it began, however it's used. That's checked from `created_at`, which use
+   * never moves, so lowering it applies to sessions already out there. One
+   * left alone for SESSION_TTL_MS expires either way. The write is at most
+   * daily — an app may read a session on every request. */
+  session(tokenHash: string, now: number, maxAgeMs: number | null = null): SessionInfo | null {
+    const [row] = this.rows<{
+      user_id: string;
+      expires_at: number;
+      last_seen: number;
+      verified_at: number;
+      created_at: number;
+    }>(
+      `SELECT user_id, expires_at, last_seen, verified_at, created_at FROM sessions WHERE token_hash = ?`,
       tokenHash,
     );
     if (!row) return null;
-    if (row.expires_at <= now) {
+    if (row.expires_at <= now || (maxAgeMs !== null && now - row.created_at >= maxAgeMs)) {
       this.sql.exec(`DELETE FROM sessions WHERE token_hash = ?`, tokenHash);
       return null;
     }
@@ -488,7 +532,7 @@ export class AuthStore {
       this.sql.exec(
         `UPDATE sessions SET last_seen = ?, expires_at = ? WHERE token_hash = ?`,
         now,
-        now + SESSION_TTL_MS,
+        expiry(row.created_at, now, maxAgeMs),
         tokenHash,
       );
     }
@@ -620,6 +664,13 @@ export class AuthStore {
     this.sql.exec(`DELETE FROM codes WHERE ${match}`, ...key);
     return { userId: row.user_id };
   }
+}
+
+/** A session's stored expiry: a year past its last use, but never past its
+ * absolute lifetime, so the sweep clears a capped session on time. */
+function expiry(createdAt: number, now: number, maxAgeMs: number | null): number {
+  const sliding = now + SESSION_TTL_MS;
+  return maxAgeMs === null ? sliding : Math.min(sliding, createdAt + maxAgeMs);
 }
 
 export function normalizeEmail(email: string): string {

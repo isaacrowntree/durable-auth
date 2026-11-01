@@ -27,6 +27,8 @@ export default {
     const auth = createAuth({
       store: env.AUTH,
       rpName: "durable-auth example",
+      // This app keeps nothing on the account but its name.
+      parseProfile: () => ({}),
       sendCode: cloudflareEmail(env.EMAIL, { from: env.EMAIL_FROM, appName: "durable-auth example" }),
       codeSecret: env.CODE_SECRET,
       rateLimit: rateLimitBinding(env.AUTH_LIMITER),

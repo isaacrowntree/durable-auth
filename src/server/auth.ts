@@ -16,7 +16,14 @@ import {
 import { SessionCookie } from "./cookie.js";
 import { codeKey, hashCode, newAccountId, randomToken, sha256, sixDigitCode } from "./crypto.js";
 import { authStoreFrom, type AuthApi, type AuthNamespace } from "./stub.js";
-import { normalizeEmail, type AccountView, type CodePurpose, type Profile, type StoredPasskey } from "./store.js";
+import {
+  SIGNUPS_PER_HOUR,
+  normalizeEmail,
+  type AccountView,
+  type CodePurpose,
+  type Profile,
+  type StoredPasskey,
+} from "./store.js";
 
 export interface WebAuthn {
   generateRegistrationOptions: typeof generateRegistrationOptions;
@@ -49,13 +56,17 @@ export interface AuthOptions<P extends Profile = Profile> {
   origins?: string[];
   /** Validate the app's account data, on sign-up (`current` null) and on
    * every update (`input` is the current profile with `patch`, what the
-   * client sent, merged in). The user can write any of it: keep anything
-   * they mustn't set themselves (a plan, a role) out of the profile, or
-   * refuse it here. Throw `new AuthInputError(message)` to refuse. Default:
-   * any JSON object up to 4 KB. */
-  parseProfile?: (input: unknown, current: P | null, patch: unknown) => P;
-  /** Who may create an account. Default: anyone. Return false to refuse.
-   * `body` is the request's JSON — e.g. an invite code your page sent. */
+   * client sent, merged in). Return only the fields you accept. The user can
+   * write any of it: keep anything they mustn't set themselves (a plan, a
+   * role) out of the profile, or refuse it here. Throw
+   * `new AuthInputError(message)` to refuse.
+   *
+   * Required, so that letting users write any field is a choice made on
+   * purpose: `looseProfile` accepts any JSON object up to 4 KB. */
+  parseProfile: (input: unknown, current: P | null, patch: unknown) => P;
+  /** Who may create an account. Default: anyone, within `maxSignupsPerHour`.
+   * Return false to refuse. `body` is the request's JSON — e.g. an invite
+   * code your page sent. */
   allowSignup?: (req: Request, attempt: { name: string; body: Record<string, unknown> }) => boolean | Promise<boolean>;
   /** Send a one-time code. Absent: recovery by email is off, and `config`
    * says so. See `cloudflareEmail` for Cloudflare Email Sending. */
@@ -73,6 +84,23 @@ export interface AuthOptions<P extends Profile = Profile> {
   };
   /** true = allowed. Keys look like "login:<ip>". See `rateLimitBinding`. */
   rateLimit?: (key: string) => Promise<boolean>;
+  /** Sign-ups a client (an IPv4 address, or an IPv6 /64) may start an hour,
+   * counted in the auth object itself, so it needs no binding. Every account
+   * lives in one object; this keeps a script from filling it. Default 20.
+   * 0 turns it off — for an app that limits sign-up some other way. A request
+   * with no client address (no `cf-connecting-ip`) isn't counted. */
+  maxSignupsPerHour?: number;
+  /** End every session this long after it began, however much it's used.
+   * Default: none — a session lasts until a year passes without it being
+   * used. Bounds how long a copied cookie stays good. Applies to sessions
+   * already signed in, too. */
+  sessionMaxAgeMs?: number;
+  /** Told after a change to how the account is signed in to has been saved:
+   * a passkey added or removed, the recovery email changed, the account
+   * recovered by email. For telling the user, who may not have made it.
+   * Runs after the response with `waitUntil`; if it throws, the change
+   * stands and the error is logged. */
+  onSecurityEvent?: (userId: string, event: SecurityEvent) => Promise<void> | void;
   /** Remove what the account owns outside auth, before the account itself
    * goes. If this throws, the account survives to retry with. */
   onDeleteAccount?: (userId: string) => Promise<void>;
@@ -90,6 +118,16 @@ export interface AuthOptions<P extends Profile = Profile> {
   /** For tests: stand-in passkey cryptography. */
   webauthn?: WebAuthn;
 }
+
+/** What `onSecurityEvent` is told. Enough to write the user a message. */
+export type SecurityEvent =
+  | { type: "passkey-added"; passkeyId: string }
+  | { type: "passkey-removed"; passkeyId: string }
+  /** `previous` is the address it replaced, or null when there was none —
+   * the one worth writing to, if it wasn't the user who changed it. */
+  | { type: "email-changed"; email: string; previous: string | null }
+  /** Signed in by an emailed code: every session ended, every passkey gone. */
+  | { type: "recovered"; email: string };
 
 export interface Session {
   userId: string;
@@ -143,7 +181,18 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
   let codeHashKey: Promise<CryptoKey> | undefined;
   const codeHash = (email: string, purpose: CodePurpose, code: string) =>
     (codeHashKey ??= codeKey(options.codeSecret!)).then((k) => hashCode(k, email, purpose, code));
-  const parseProfile = options.parseProfile ?? (defaultProfile as unknown as NonNullable<AuthOptions<P>["parseProfile"]>);
+  if (typeof options.parseProfile !== "function") {
+    throw new Error("durable-auth: parseProfile is required — validate your account data, or pass looseProfile");
+  }
+  const parseProfile = options.parseProfile;
+  const signupsPerHour = options.maxSignupsPerHour ?? SIGNUPS_PER_HOUR;
+  if (!Number.isInteger(signupsPerHour) || signupsPerHour < 0) {
+    throw new Error("durable-auth: maxSignupsPerHour must be a whole number, 0 or more");
+  }
+  const maxAge = options.sessionMaxAgeMs ?? null;
+  if (maxAge !== null && !(Number.isFinite(maxAge) && maxAge > 0)) {
+    throw new Error("durable-auth: sessionMaxAgeMs must be a positive number of milliseconds");
+  }
 
   // ---- helpers ------------------------------------------------------------
 
@@ -156,7 +205,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
     const token = cookie.read(req);
     if (!token) return null;
     const tokenHash = await sha256(token);
-    const found = await store.session(tokenHash, now());
+    const found = await store.session(tokenHash, now(), maxAge);
     return found ? { ...found, tokenHash } : null;
   }
 
@@ -175,7 +224,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
 
   async function signedIn(req: Request, account: AccountView): Promise<Response> {
     const token = randomToken();
-    await store.createSession(await sha256(token), account.id, now());
+    await store.createSession(await sha256(token), account.id, now(), maxAge);
     return Response.json({ account }, { headers: { "set-cookie": cookie.set(req, token) } });
   }
 
@@ -188,6 +237,25 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
     const ip = clientIp(req);
     const ok = await options.rateLimit(`${bucket}:${ip ? rateLimitSubject(ip) : "unknown"}`);
     if (!ok) fail(429, "Too many attempts — wait a minute and try again");
+  }
+
+  /** The built-in cap on sign-ups, per client, kept in the auth object. */
+  async function limitSignups(req: Request): Promise<void> {
+    const ip = clientIp(req);
+    if (signupsPerHour === 0 || !ip) return;
+    if ((await store.noteSignup(rateLimitSubject(ip), now(), signupsPerHour)) === "rate-limited") {
+      fail(429, "Too many sign-ups from here — try again in an hour");
+    }
+  }
+
+  /** Tell the app, once the change is saved. Never fails the request. */
+  async function securityEvent(userId: string, event: SecurityEvent): Promise<void> {
+    if (!options.onSecurityEvent) return;
+    const work = (async () => options.onSecurityEvent!(userId, event))().catch((e: unknown) => {
+      console.error(`durable-auth: onSecurityEvent failed for ${event.type}`, e);
+    });
+    if (options.waitUntil) options.waitUntil(work);
+    else await work;
   }
 
   async function requireHuman(req: Request, token: unknown, action: TurnstileAction): Promise<void> {
@@ -326,6 +394,8 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       if (options.allowSignup && !(await options.allowSignup(req, { name, body }))) {
         fail(403, "Sign-up is closed");
       }
+      // Last, so a request refused above doesn't use up the client's allowance.
+      await limitSignups(req);
       return Response.json(await registration(req, newAccountId(), name, "register"));
     },
 
@@ -431,7 +501,9 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const challenge = clientChallenge(response);
       const issued = await store.consumeChallenge(challenge, "add-passkey", now());
       if (issued?.userId !== userId) fail(400, "That expired — try again");
-      await store.addPasskey(await verifiedPasskey(req, response, challenge, userId), now());
+      const key = await verifiedPasskey(req, response, challenge, userId);
+      await store.addPasskey(key, now());
+      await securityEvent(userId, { type: "passkey-added", passkeyId: key.id });
       return Response.json({ ok: true });
     },
 
@@ -445,6 +517,7 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       const removed = await store.deletePasskey(s.userId, id, s.tokenHash);
       if (removed === "missing") fail(404, "No such passkey");
       if (removed === "last") fail(409, "That's your only passkey — add another before removing it");
+      await securityEvent(s.userId, { type: "passkey-removed", passkeyId: id });
       return Response.json({ ok: true });
     },
 
@@ -485,7 +558,9 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       // adds a fresh one for this device next.
       await store.revokeEverything(redeemed.userId);
       const account = (await store.account(redeemed.userId)) ?? fail(400, "Account not found");
-      return signedIn(req, account);
+      const response_ = await signedIn(req, account);
+      await securityEvent(account.id, { type: "recovered", email });
+      return response_;
     },
 
     // ---- the signed-in account's recovery email ------------------------------
@@ -534,8 +609,10 @@ export function createAuth<P extends Profile = Profile>(options: AuthOptions<P>)
       );
       if (redeemed?.userId !== userId) fail(400, "That code is wrong or has expired");
 
+      const previous = (await store.account(userId))?.email ?? null;
       const account = await store.setEmail(userId, email);
       if (account === "taken") fail(409, "That email is already used by another account");
+      await securityEvent(userId, { type: "email-changed", email, previous });
       return Response.json({ account });
     },
 
@@ -654,7 +731,10 @@ function parseCode(v: unknown): string {
   return code;
 }
 
-function defaultProfile(input: unknown): Profile {
+/** A `parseProfile` that lets the user write any JSON object up to 4 KB.
+ * Fine when nothing in the profile is anything they mustn't set themselves;
+ * the moment something is — a plan, a role — write your own. */
+export function looseProfile(input: unknown): Profile {
   if (input === undefined || input === null) return {};
   if (typeof input !== "object" || Array.isArray(input)) throw new AuthInputError("Profile must be an object");
   if (JSON.stringify(input).length > PROFILE_MAX_BYTES) throw new AuthInputError("Profile is too large");

@@ -55,7 +55,7 @@ which is the one part nobody should write themselves.
 | **Step-up** | deleting the account, changing the recovery email, and adding or removing a passkey need a passkey (or, just after recovery, the emailed code) used in the last 5 minutes. The client asks for it and retries on its own |
 | **Recovery** | six-digit codes by email, 10-minute expiry, 5 guesses a code, 5 codes an hour and 10 wrong guesses a day per email, 1,000 wrong guesses a day in all. Recovering signs every device out and revokes every passkey. Adding an email has its own budget, per account, so it can't spend anyone's recovery allowance |
 | **No enumeration** | "is this email registered?" can't be learned from recovery or from adding an email: the answers, the rate limits and (with `waitUntil`) the timing are the same either way |
-| **Also** | passkey list and remove, sign out other devices, a sign-up hook, per-IP rate limits, Turnstile, a daily sweep of expired rows |
+| **Also** | passkey list and remove, sign out other devices, a sign-up hook, a built-in sign-up cap, per-IP rate limits, Turnstile, an optional absolute session lifetime, a hook for security events, a daily sweep of expired rows |
 
 ## Server
 
@@ -70,6 +70,7 @@ export default {
     const auth = createAuth({
       store: env.AUTH,
       rpName: "My App",
+      parseProfile, // your validator — see Options
       sendCode: cloudflareEmail(env.EMAIL, { from: "noreply@myapp.com", appName: "My App" }),
       codeSecret: env.CODE_SECRET, // openssl rand -base64 32 | wrangler secret put CODE_SECRET
       rateLimit: rateLimitBinding(env.AUTH_LIMITER),
@@ -130,7 +131,7 @@ when the user simply dismissed the passkey prompt.
 
 ## Options
 
-`createAuth(options)`. Only `store` and `rpName` are required.
+`createAuth(options)`. `store`, `rpName` and `parseProfile` are required.
 
 | Option | Default | |
 |---|---|---|
@@ -140,13 +141,16 @@ when the user simply dismissed the passkey prompt.
 | `cookieName` | `"session"` | `__Host-` is added over HTTPS |
 | `rpID` | request hostname | set it to share passkeys across subdomains |
 | `origins` | request origin | allowed for passkeys and for POSTs |
-| `parseProfile` | any object ≤ 4 KB | validate your own account data; throw `AuthInputError` to refuse |
+| `parseProfile` | required | validate your own account data and return only what you accept; throw `AuthInputError` to refuse. `looseProfile` takes any object ≤ 4 KB — only for a profile with nothing in it the user mustn't set |
 | `allowSignup` | everyone | `(req, { name }) => boolean`: invite codes, a waitlist, a domain |
+| `maxSignupsPerHour` | 20 | sign-ups a client (IPv4 address or IPv6 /64) may start an hour, counted in the auth object, no binding needed; 0 turns it off |
 | `sendCode` | off | `(to, code, purpose) => Promise<void>`; `cloudflareEmail(...)` is one |
 | `codeSecret` | | required with `sendCode`: a Worker secret of 32+ characters that codes are hashed under |
 | `turnstile` | off | `{ siteKey, verify: turnstileVerifier(secret, { hostnames, checkAction }) }`; `verify` gets the form, `"signup"` or `"recover"` |
 | `rateLimit` | off | `(key) => Promise<boolean>`; `rateLimitBinding(...)` is one |
 | `onDeleteAccount` | | remove your app's data for the user before the account goes |
+| `onSecurityEvent` | | `(userId, event)` after a passkey is added or removed, the recovery email changes (with the `previous` one), or the account is recovered — to tell the user. Runs after the response; a throw is logged and the change stands |
+| `sessionMaxAgeMs` | none | end every session this long after sign-in, however much it's used; applies to sessions already out there |
 | `waitUntil` | | pass it, or recovery answers before sending and leaks timing |
 | `reauthWindowMs` | 5 min | how recent "recent" is for step-up |
 
@@ -200,8 +204,12 @@ What it defends against, and how:
 - **CSRF.** `SameSite=Lax` keeps the cookie off cross-site POSTs, and every
   POST must carry an allowed `Origin` (or `Sec-Fetch-Site: same-origin`).
   `sameOrigin(req)` is exported, to apply the same rule to your own routes.
-- **Bots signing up.** Per-IP rate limits (an IPv6 client counts as its /64),
-  optional Turnstile, and `allowSignup`.
+- **Bots signing up.** A built-in cap of 20 sign-ups an hour per client,
+  kept in the auth object so it needs no binding; per-IP rate limits (an IPv6
+  client counts as its /64), optional Turnstile, and `allowSignup`.
+- **A change the user didn't make.** `onSecurityEvent` tells your app when a
+  passkey is added or removed, the recovery email changes or the account is
+  recovered, so you can tell the user — often the first sign of trouble.
 
 What it doesn't do:
 
@@ -217,15 +225,28 @@ What it doesn't do:
   email's recovery for a day, and a flood of them locks everyone's. Rate
   limits and Turnstile keep that expensive; it's the trade for codes that
   can't be brute-forced.
-- **Sessions in use don't expire.** A session slides a year from its last
-  use; there's no absolute lifetime. Step-up guards what matters, and
+- **Sessions in use don't expire, unless you say so.** A session slides a
+  year from its last use. Set `sessionMaxAgeMs` to end every session that
+  long after sign-in. Step-up guards what matters either way, and
   `logout-others` or removing a passkey ends the rest.
 - **The profile is the user's to write.** Anything a user mustn't set on
   themselves — a plan, a role — belongs in your own storage, or gets refused
-  in `parseProfile`.
+  in `parseProfile`. That's why it's required: return only the fields you
+  accept.
 - **One Durable Object serves every account.** Sign-in is rare, but
   `auth.session(req)` is a round trip to it. That's plenty for thousands of
   active users. Past that, cache the session in your Worker for a few seconds.
+
+### Production checklist
+
+- `parseProfile` returns only fields the user may set.
+- A rate limit on the auth routes (`rateLimitBinding`), on top of the
+  built-in sign-up cap: every account and every sign-in share one object.
+- Turnstile on sign-up and recovery if the app is public.
+- `waitUntil`, so recovery can't be timed.
+- `codeSecret` from a Worker secret, if you send codes.
+- `onSecurityEvent` wired to something that reaches the user.
+- `sessionMaxAgeMs`, if a copied cookie living as long as it's used is too long.
 
 Found a hole? See [SECURITY.md](SECURITY.md).
 
