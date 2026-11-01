@@ -13,14 +13,17 @@ Install: `npm i durable-auth`. Two entry points: `durable-auth/server` and `dura
   - `handle(req)` → `Response` for any path under `basePath`, else `null`.
   - `session(req)` → `{ userId, tokenHash, verifiedAt } | null` — use it to guard your own routes; `verifiedAt` is when the session last proved its user.
   - `account(req)` → `{ id, name, email, profile } | null`.
-- Options (only `store` and `rpName` required):
+- Options (`store`, `rpName` and `parseProfile` required):
   - `store` — the Durable Object namespace (e.g. `env.AUTH`).
   - `rpName` — shown in the passkey prompt.
   - `basePath` — default `"/auth"`; routes at `<basePath>/<action>`.
   - `cookieName` — default `"session"`; `__Host-` prefix and `Secure` added except on plain-http localhost.
   - `rpID` — default the request hostname; set to share passkeys across subdomains.
   - `origins` — default the request origin; allowed for passkeys and for POSTs.
-  - `parseProfile(input, current, patch)` — validate app account data; default any JSON object ≤ 4 KB; throw `AuthInputError` to refuse with a 400.
+  - `parseProfile(input, current, patch)` — required; validate app account data and return only accepted fields; throw `AuthInputError` to refuse with a 400. `looseProfile` accepts any JSON object ≤ 4 KB.
+  - `maxSignupsPerHour` — default 20 per client (IPv4 or IPv6 /64), counted in the auth object; 0 = off; requests with no `cf-connecting-ip` aren't counted. Over it: 429.
+  - `sessionMaxAgeMs` — default none; ends every session that long after sign-in regardless of use; applies to existing sessions.
+  - `onSecurityEvent(userId, event)` — after commit; event is `{ type: "passkey-added" | "passkey-removed", passkeyId }`, `{ type: "email-changed", email, previous }` or `{ type: "recovered", email }`. Runs via `waitUntil` when given; a throw is logged, never fails the request.
   - `allowSignup(req, { name, body })` — default everyone; return false to refuse (invites, waitlist, domain).
   - `sendCode(to, code, purpose)` — default off (then email recovery is off). `cloudflareEmail(env.EMAIL, { from, appName })` is one.
   - `codeSecret` — required with `sendCode`; a Worker secret, 32+ characters (`openssl rand -base64 32`). Codes are stored as HMAC-SHA-256 under it. Changing it retires codes already sent.
@@ -30,7 +33,7 @@ Install: `npm i durable-auth`. Two entry points: `durable-auth/server` and `dura
   - `waitUntil(work)` — pass `ctx.waitUntil`; without it recovery sends before answering and leaks timing.
   - `reauthWindowMs` — default 5 minutes; how recent a passkey (or emailed code) must be for step-up.
   - `maxNameLength` — default 64.
-- Also exported: `AuthInputError`, `AuthStore`, `authStoreFrom`, `asyncStore` (tests), `normalizeEmail`, `SCHEMA_VERSION`, `cloudflareEmail`, `turnstileVerifier`, `rateLimitBinding`, `sameOrigin(req, origins?)` (the origin rule for your own routes), `rateLimitSubject(ip)` (IPv6 folded to /64).
+- Also exported: `looseProfile`, `SIGNUPS_PER_HOUR`, type `SecurityEvent`, `AuthInputError`, `AuthStore`, `authStoreFrom`, `asyncStore` (tests), `normalizeEmail`, `SCHEMA_VERSION`, `cloudflareEmail`, `turnstileVerifier`, `rateLimitBinding`, `sameOrigin(req, origins?)` (the origin rule for your own routes), `rateLimitSubject(ip)` (IPv6 folded to /64).
 
 ## Routes (all JSON, under basePath)
 

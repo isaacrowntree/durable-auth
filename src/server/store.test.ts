@@ -395,6 +395,26 @@ describe("pruning", () => {
     expect(store.redeemCode("a@example.com", "verify-email", "right", 2 * 60 * 60 * 1000)).toBeNull();
   });
 
+  // Stored expiry never runs past the cap, so the sweep clears a capped
+  // session on time rather than a year after its last use.
+  it("caps a session's stored expiry at its absolute lifetime", () => {
+    store.createSession("h", "u1", 0, 1_000);
+    store.prune(999);
+    expect(store.session("h", 999, 1_000)?.userId).toBe("u1");
+    store.prune(1_000);
+    expect(store.session("h", 999, null)).toBeNull();
+  });
+
+  it("caps a sign-up count per client per hour", () => {
+    const HOUR = 60 * 60 * 1000;
+    expect(store.noteSignup("203.0.113.7", 0, 2)).toBe("ok");
+    expect(store.noteSignup("203.0.113.7", 1, 2)).toBe("ok");
+    expect(store.noteSignup("203.0.113.7", 2, 2)).toBe("rate-limited");
+    expect(store.noteSignup("198.51.100.1", 2, 2)).toBe("ok");
+    store.prune(HOUR + 1);
+    expect(store.noteSignup("203.0.113.7", HOUR + 1, 2)).toBe("ok");
+  });
+
   it("drops what has expired and keeps what hasn't", () => {
     store.createChallenge("old", "login", null, 0);
     store.createSession("h-old", "u1", 0);
@@ -432,6 +452,16 @@ describe("a database from schema version 1", () => {
     // Opening it again is a no-op, not a second ALTER.
     expect(() => new AuthStore(memorySql(db))).not.toThrow();
     expect(db.prepare(`SELECT value FROM durable_auth_meta WHERE key = 'schema'`).get()).toEqual({ value: SCHEMA_VERSION });
+  });
+
+  // An absolute lifetime needs to know when a session began. One from before
+  // that was recorded counts from when it was last seen.
+  it("dates an old session from when it was last seen", () => {
+    const db = v1();
+    db.prepare(`UPDATE sessions SET last_seen = 500`).run();
+    const upgraded = new AuthStore(memorySql(db));
+    expect(upgraded.session("h1", 1_400, 1_000)?.userId).toBe("u1");
+    expect(upgraded.session("h1", 1_500, 1_000)).toBeNull();
   });
 
   // Codes, requests and failures in flight carry over the codes table's

@@ -4,7 +4,7 @@
  * passkey cryptography (a fake that still round-trips the stored public key —
  * see below) and the email provider (codes are kept for the test to read). */
 import { DurableObject } from "cloudflare:workers";
-import { AuthDurableObject, AuthStore, createAuth, type AuthNamespace, type WebAuthn } from "../../src/server/index";
+import { AuthDurableObject, AuthStore, createAuth, looseProfile, type AuthNamespace, type WebAuthn } from "../../src/server/index";
 
 export class Auth extends AuthDurableObject {}
 
@@ -26,6 +26,8 @@ export class Legacy extends DurableObject {
       key: [...store.passkey("k1")!.publicKey],
       session: store.session("h1", 1),
       passkeys: store.passkeySummaries("u1"),
+      // Dated from its last use (0), so a 5ms lifetime has run out by 10.
+      aged: store.session("h1", 10, 5),
     };
   }
 }
@@ -83,6 +85,7 @@ export default {
     const auth = createAuth({
       store: env.AUTH,
       rpName: "Integration",
+      parseProfile: looseProfile,
       now: () => Date.now() + clockOffset,
       webauthn,
       sendCode: async (to, code) => void sent.push({ to, code }),

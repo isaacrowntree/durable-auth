@@ -106,6 +106,7 @@ describe("the auth Durable Object", () => {
       key: [1, 2, 3],
       session: { userId: "u1", verifiedAt: 0 },
       passkeys: [{ id: "k1", createdAt: 0, lastUsedAt: null, deviceType: null, backedUp: null }],
+      aged: null,
     });
   });
 });

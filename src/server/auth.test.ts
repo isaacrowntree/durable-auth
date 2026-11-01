@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { memorySql } from "../../test/sqlite.js";
-import { AuthInputError, createAuth, type Auth, type AuthOptions, type WebAuthn } from "./auth.js";
+import { AuthInputError, createAuth, looseProfile, type Auth, type AuthOptions, type WebAuthn } from "./auth.js";
 import { AuthStore } from "./store.js";
 import { asyncStore } from "./stub.js";
 import { base64url, codeKey, hashCode, sha256 } from "./crypto.js";
@@ -55,6 +55,7 @@ beforeEach(() => {
   options = {
     store: asyncStore(raw),
     rpName: "Test",
+    parseProfile: looseProfile,
     basePath: "/api/auth",
     now: () => t,
     webauthn: fakeWebAuthn(),
@@ -355,7 +356,7 @@ describe("the profile", () => {
     expect((await call("profile", { method: "PUT", body: { profile: { plan: "x" } }, cookie })).status).toBe(400);
   });
 
-  it("refuses anything but a small object by default", async () => {
+  it("with looseProfile, refuses anything but a small object", async () => {
     const { cookie } = await signUp();
     const big = { blob: "x".repeat(5000) };
     expect((await call("profile", { method: "PUT", body: { profile: big }, cookie })).status).toBe(400);
@@ -1223,5 +1224,192 @@ describe("the default profile rules", () => {
     expect((await signUp("A", "key-a", { a: "x".repeat(4096 - 8) })).status).toBe(200);
     expect(await signUp("B", "key-b", { a: "x".repeat(4096 - 7) })).toMatchObject({ status: 400, body: { error: "Profile is too large" } });
     expect(await signUp("C", "key-c", "kg")).toMatchObject({ status: 400, body: { error: "Profile must be an object" } });
+  });
+});
+
+/** A forgotten validator used to mean "the user may write any field" — a
+ * role, a plan — with nothing failing anywhere. Now it's a choice. */
+describe("parseProfile is required", () => {
+  it("refuses to start without one", () => {
+    expect(() => createAuth({ ...options, parseProfile: undefined as never })).toThrow(/parseProfile is required/);
+  });
+
+  it("refuses a bad maxSignupsPerHour or sessionMaxAgeMs", () => {
+    for (const maxSignupsPerHour of [-1, 1.5, NaN]) {
+      expect(() => createAuth({ ...options, maxSignupsPerHour })).toThrow(/maxSignupsPerHour/);
+    }
+    for (const sessionMaxAgeMs of [0, -5, NaN, Infinity]) {
+      expect(() => createAuth({ ...options, sessionMaxAgeMs })).toThrow(/sessionMaxAgeMs/);
+    }
+  });
+});
+
+/** Every account lands in one object, so open sign-up needs a ceiling even
+ * when the app wires no rate limit. */
+describe("the built-in sign-up cap", () => {
+  const startFrom = (ip: string | null, name = "Isaac") =>
+    auth.handle(
+      new Request(`${ORIGIN}/api/auth/register-options`, {
+        method: "POST",
+        headers: { origin: ORIGIN, "content-type": "application/json", ...(ip ? { "cf-connecting-ip": ip } : {}) },
+        body: JSON.stringify({ name }),
+      }),
+    ).then((r) => r!.status);
+
+  it("allows 20 an hour per client by default, then refuses", async () => {
+    for (let i = 0; i < 20; i++) expect(await startFrom("203.0.113.7")).toBe(200);
+    expect(await startFrom("203.0.113.7")).toBe(429);
+    // Another client is counted on its own.
+    expect(await startFrom("203.0.113.8")).toBe(200);
+    // An hour on, the allowance is back.
+    t += 60 * MINUTE + 1;
+    expect(await startFrom("203.0.113.7")).toBe(200);
+  });
+
+  it("counts an IPv6 client by its /64", async () => {
+    options.maxSignupsPerHour = 1;
+    rebuild();
+    expect(await startFrom("2001:db8:a:b::1")).toBe(200);
+    expect(await startFrom("2001:db8:a:b:ffff::2")).toBe(429);
+  });
+
+  it("doesn't count a sign-up refused for another reason", async () => {
+    options.maxSignupsPerHour = 1;
+    options.allowSignup = (_req, { name }) => name === "Invited";
+    rebuild();
+    expect(await startFrom("203.0.113.7", "Stranger")).toBe(403);
+    expect(await startFrom("203.0.113.7", "Invited")).toBe(200);
+  });
+
+  it("is off at 0, and doesn't count a request with no client address", async () => {
+    options.maxSignupsPerHour = 0;
+    rebuild();
+    for (let i = 0; i < 3; i++) expect(await startFrom("203.0.113.7")).toBe(200);
+    options.maxSignupsPerHour = 1;
+    rebuild();
+    for (let i = 0; i < 3; i++) expect(await startFrom(null)).toBe(200);
+  });
+});
+
+/** Without a ceiling, a session used once a year lives forever — and so does
+ * a copied cookie. */
+describe("an absolute session lifetime", () => {
+  const DAY = 24 * 60 * MINUTE;
+
+  it("ends a session that long after sign-in, however much it's used", async () => {
+    options.sessionMaxAgeMs = 10 * DAY;
+    rebuild();
+    const { cookie } = await signUp();
+    for (let day = 0; day < 9; day++) {
+      t += DAY + 1;
+      expect((await call("session", { cookie })).status).toBe(200);
+    }
+    t += DAY;
+    expect((await call("session", { cookie })).status).toBe(401);
+    expect(await auth.session(new Request(ORIGIN, { headers: { cookie: cookie! } }))).toBeNull();
+  });
+
+  it("applies to sessions already signed in when it's turned on", async () => {
+    const { cookie } = await signUp();
+    t += 30 * DAY;
+    expect((await call("session", { cookie })).status).toBe(200);
+    options.sessionMaxAgeMs = 7 * DAY;
+    rebuild();
+    expect((await call("session", { cookie })).status).toBe(401);
+  });
+
+  it("is off by default: a session in use outlives a year", async () => {
+    const { cookie } = await signUp();
+    for (let i = 0; i < 4; i++) {
+      t += 120 * DAY;
+      expect((await call("session", { cookie })).status).toBe(200);
+    }
+  });
+});
+
+/** A change to how an account is signed in to may not be the user's own —
+ * a passkey added on a borrowed phone. The app gets told, so it can say so. */
+describe("security events", () => {
+  let events: { userId: string; event: Record<string, unknown> }[];
+  beforeEach(() => {
+    events = [];
+    options.onSecurityEvent = (userId, event) => void events.push({ userId, event });
+    rebuild();
+  });
+
+  it("tells the app when a passkey is added or removed", async () => {
+    const { cookie, body } = await signUp("Isaac", "key-1");
+    const options_ = await call("passkey-options", { body: {}, cookie });
+    await call("passkey-verify", { body: { response: passkeyResponse("key-2", options_.body.challenge) }, cookie });
+    await call("passkey-delete", { body: { id: "key-1" }, cookie });
+    expect(events).toEqual([
+      { userId: body.account.id, event: { type: "passkey-added", passkeyId: "key-2" } },
+      { userId: body.account.id, event: { type: "passkey-removed", passkeyId: "key-1" } },
+    ]);
+  });
+
+  it("says what a changed recovery email replaced", async () => {
+    const { cookie, body } = await signUp();
+    for (const email of ["one@example.com", "two@example.com"]) {
+      await call("email-start", { body: { email }, cookie });
+      await call("email-verify", { body: { email, code: sent.pop()!.code }, cookie });
+    }
+    expect(events.map((e) => e.event)).toEqual([
+      { type: "email-changed", email: "one@example.com", previous: null },
+      { type: "email-changed", email: "two@example.com", previous: "one@example.com" },
+    ]);
+    expect(events.every((e) => e.userId === body.account.id)).toBe(true);
+  });
+
+  it("tells the app when an account is recovered by email", async () => {
+    const { cookie, body } = await signUp();
+    await call("email-start", { body: { email: "isaac@example.com" }, cookie });
+    await call("email-verify", { body: { email: "isaac@example.com", code: sent.pop()!.code }, cookie });
+    events.length = 0;
+    await call("recover-start", { body: { email: "isaac@example.com" } });
+    await call("recover-verify", { body: { email: "isaac@example.com", code: sent.pop()!.code } });
+    expect(events).toEqual([{ userId: body.account.id, event: { type: "recovered", email: "isaac@example.com" } }]);
+  });
+
+  it("says nothing for a change that was refused", async () => {
+    const { cookie } = await signUp("Isaac", "key-1");
+    await call("passkey-delete", { body: { id: "key-1" }, cookie }); // the last one
+    await call("passkey-delete", { body: { id: "nope" }, cookie });
+    expect(events).toEqual([]);
+  });
+
+  it("runs after the response when it can", async () => {
+    const pending: Promise<unknown>[] = [];
+    options.waitUntil = (p) => void pending.push(p);
+    let told = 0;
+    options.onSecurityEvent = async () => {
+      await Promise.resolve();
+      told++;
+    };
+    rebuild();
+    const { cookie } = await signUp("Isaac", "key-1");
+    const options_ = await call("passkey-options", { body: {}, cookie });
+    const res = await call("passkey-verify", { body: { response: passkeyResponse("key-2", options_.body.challenge) }, cookie });
+    expect(res.status).toBe(200);
+    expect(pending).toHaveLength(1);
+    await Promise.all(pending);
+    expect(told).toBe(1);
+  });
+
+  // The change is saved before the app hears of it; a failed notice mustn't
+  // turn a done thing into an error.
+  it("can't fail the change it reports", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    options.onSecurityEvent = () => {
+      throw new Error("mail is down");
+    };
+    rebuild();
+    const { cookie } = await signUp("Isaac", "key-1");
+    const options_ = await call("passkey-options", { body: {}, cookie });
+    const res = await call("passkey-verify", { body: { response: passkeyResponse("key-2", options_.body.challenge) }, cookie });
+    expect(res.status).toBe(200);
+    expect((await call("passkeys", { cookie })).body.passkeys).toHaveLength(2);
+    expect(logged).toHaveBeenCalledWith(expect.stringMatching(/passkey-added/), expect.any(Error));
+    logged.mockRestore();
   });
 });

@@ -387,13 +387,16 @@
                 <tr><th scope="row">cookieName</th><td class="mono">"session"</td><td><code>__Host-</code> is added over HTTPS (and dropped on plain-http localhost only).</td></tr>
                 <tr><th scope="row">rpID</th><td class="mono">request hostname</td><td>Set it to share passkeys across subdomains.</td></tr>
                 <tr><th scope="row">origins</th><td class="mono">request origin</td><td>Allowed for passkeys and for POSTs.</td></tr>
-                <tr><th scope="row">parseProfile</th><td class="mono">any object ≤ 4 KB</td><td>Validate your own account data; throw <code>AuthInputError</code> to refuse.</td></tr>
+                <tr><th scope="row">parseProfile</th><td class="mono">required</td><td>Validate your own account data and return only what you accept; throw <code>AuthInputError</code> to refuse. <code>looseProfile</code> takes any object ≤ 4 KB.</td></tr>
                 <tr><th scope="row">allowSignup</th><td class="mono">everyone</td><td><code>(req, { name, body }) =&gt; boolean</code>: invite codes, a waitlist, a domain.</td></tr>
+                <tr><th scope="row">maxSignupsPerHour</th><td class="mono">20</td><td>Sign-ups a client (IPv4 address or IPv6 /64) may start an hour, kept in the auth object. 0 turns it off.</td></tr>
                 <tr><th scope="row">sendCode</th><td class="mono">off</td><td><code>(to, code, purpose) =&gt; Promise&lt;void&gt;</code>; <code>cloudflareEmail(...)</code> is one. Off means no email recovery.</td></tr>
                 <tr><th scope="row">codeSecret</th><td class="mono">required with sendCode</td><td>A Worker secret of 32+ characters that emailed codes are hashed under, so a copy of the store can't be used to try codes offline. Changing it retires codes already sent.</td></tr>
                 <tr><th scope="row">turnstile</th><td class="mono">off</td><td><code>{ siteKey, verify: turnstileVerifier(secret, { hostnames, checkAction }) }</code>, on sign-up and recovery. <code>verify</code> is told the form: <code>"signup"</code> or <code>"recover"</code>.</td></tr>
                 <tr><th scope="row">rateLimit</th><td class="mono">off</td><td><code>(key) =&gt; Promise&lt;boolean&gt;</code>; <code>rateLimitBinding(...)</code> is one. Keys look like <code>login:&lt;ip&gt;</code>.</td></tr>
                 <tr><th scope="row">onDeleteAccount</th><td class="mono">none</td><td>Remove your app's data for the user before the account goes. If it throws, the account survives to retry.</td></tr>
+                <tr><th scope="row">onSecurityEvent</th><td class="mono">none</td><td><code>(userId, event)</code> after a passkey is added or removed, the recovery email changes, or the account is recovered. Runs after the response; can't fail the change.</td></tr>
+                <tr><th scope="row">sessionMaxAgeMs</th><td class="mono">none</td><td>End every session this long after sign-in, however much it's used.</td></tr>
                 <tr><th scope="row">waitUntil</th><td class="mono">none</td><td>Pass it, or recovery answers after sending and leaks timing.</td></tr>
                 <tr><th scope="row">reauthWindowMs</th><td class="mono">5 min</td><td>How recent "recent" is for step-up.</td></tr>
                 <tr><th scope="row">maxNameLength</th><td class="mono">64</td><td>Longest display name accepted.</td></tr>
@@ -556,7 +559,7 @@
                 <li><span><b>Guessing codes.</b> 5 a code, 10 a day per email, 1,000 a day in all.</span></li>
                 <li><span><b>Learning who has an account.</b> Recovery and email verification answer the same way, at the same speed, under caps that count the same, either way.</span></li>
                 <li><span><b>CSRF.</b> <code>SameSite=Lax</code>, and every POST must carry an allowed <code>Origin</code>.</span></li>
-                <li><span><b>Bots signing up.</b> Per-IP rate limits, optional Turnstile, and <code>allowSignup</code>.</span></li>
+                <li><span><b>Bots signing up.</b> A built-in cap of 20 sign-ups an hour per client, per-IP rate limits, optional Turnstile, and <code>allowSignup</code>.</span></li>
               </ul>
             </div>
             <div>

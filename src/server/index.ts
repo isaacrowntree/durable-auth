@@ -1,11 +1,13 @@
 export {
   createAuth,
   AuthInputError,
+  looseProfile,
   sameOrigin,
   rateLimitSubject,
   type Auth,
   type AuthOptions,
   type Session,
+  type SecurityEvent,
   type TurnstileAction,
   type WebAuthn,
 } from "./auth.js";
@@ -16,6 +18,7 @@ export {
   AuthStore,
   normalizeEmail,
   SCHEMA_VERSION,
+  SIGNUPS_PER_HOUR,
   type AccountView,
   type CodePurpose,
   type PasskeySummary,
