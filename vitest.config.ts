@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
-    // `npm run test:coverage`; CI fails under these.
+    // `bun run test:coverage`; CI fails under these.
     coverage: {
       provider: "v8",
       include: ["src/server/**/*.ts", "src/client/**/*.ts"],
@@ -12,7 +12,7 @@ export default defineConfig({
         // Barrels: re-exports only.
         "src/server/index.ts",
         // Imports `cloudflare:workers`, so it only loads in workerd. The
-        // integration suite (`npm run test:integration`) is what runs it.
+        // integration suite (`bun run test:integration`) is what runs it.
         "src/server/durable-object.ts",
       ],
       reporter: ["text", "html"],

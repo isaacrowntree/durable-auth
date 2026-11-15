@@ -49,7 +49,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:e2e": "node examples/basic/build.mjs && playwright test",
     "example": "node examples/basic/build.mjs && wrangler dev --config examples/basic/wrangler.jsonc",
-    "prepublishOnly": "npm run test && npm run build"
+    "prepublishOnly": "bun run test && bun run build"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^14.0.0",

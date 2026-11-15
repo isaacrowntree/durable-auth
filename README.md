@@ -264,8 +264,8 @@ durable-auth is one of three open-source pieces that fit together:
 ## Run the example
 
 ```bash
-npm install
-npm run example    # → http://localhost:8790
+bun install
+bun run example    # → http://localhost:8790
 ```
 
 [`examples/basic`](examples/basic) is a complete app: a 50-line Worker and a
@@ -274,9 +274,9 @@ one-page script. Sent emails land in `.wrangler/tmp/email/`.
 ## Tests
 
 ```bash
-npm test                  # unit: the store on node:sqlite, every route
-npm run test:integration  # the Durable Object on workerd's own SQLite
-npm run test:e2e          # the example app in Chromium, real WebAuthn
+bun run test                  # unit: the store on node:sqlite, every route
+bun run test:integration  # the Durable Object on workerd's own SQLite
+bun run test:e2e          # the example app in Chromium, real WebAuthn
 ```
 
 The end-to-end suite uses Chrome's virtual authenticator, so the passkey

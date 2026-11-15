@@ -1,5 +1,5 @@
 {
-  // The example app: `npm run example` from the repo root, then open
+  // The example app: `bun run example` from the repo root, then open
   // http://localhost:8790. Also what the end-to-end suite drives.
   "name": "durable-auth-example",
   "main": "worker.ts",
@@ -17,6 +17,6 @@
   },
   // CODE_SECRET is a secret, so it's not here. Locally it comes from
   // .dev.vars (build.mjs copies .dev.vars.example on first run); deployed:
-  //   openssl rand -base64 32 | npx wrangler secret put CODE_SECRET
+  //   openssl rand -base64 32 | bunx wrangler secret put CODE_SECRET
   "dev": { "port": 8790 }
 }

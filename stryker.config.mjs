@@ -1,4 +1,4 @@
-/** Mutation testing: `npm run test:mutation`. Stryker changes auth.ts and
+/** Mutation testing: `bun run test:mutation`. Stryker changes auth.ts and
  * store.ts one small way at a time (a `>=` to `>`, a check deleted, a
  * `fail()` emptied) and runs the unit suite against each. A mutant the suite
  * doesn't notice is a rule nothing would stop someone breaking. Slow, so CI
@@ -12,7 +12,7 @@ export default {
   // test-name filter ("suite test") doesn't match Vitest 5's ("suite > test"),
   // so every mutant ran no tests and "survived". Swap back once it does.
   testRunner: "command",
-  commandRunner: { command: "npx vitest run --bail 1 --reporter dot" },
+  commandRunner: { command: "bunx vitest run --bail 1 --reporter dot" },
   coverageAnalysis: "off",
   // Stryker reads tsconfig.json through TypeScript's JS API to rewrite
   // `extends` and `references` for its sandbox. TypeScript 7 has no JS API,

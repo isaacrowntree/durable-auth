@@ -34,7 +34,7 @@ import {
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-/** Enough to find a broken boundary, small enough that `npm test` stays fast. */
+/** Enough to find a broken boundary, small enough that `bun run test` stays fast. */
 const RUNS = 150;
 
 /** Time only moves forward, as Date.now() does in a Durable Object. Mostly

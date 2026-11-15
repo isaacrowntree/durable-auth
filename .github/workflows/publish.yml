@@ -15,7 +15,7 @@ name: publish
 # To release: bump the version, then push a matching tag.
 #   npm version patch && git push --follow-tags
 #
-# Two jobs, so the token that can publish never shares a job with npm ci:
+# Two jobs, so the token that can publish never shares a job with `bun install`:
 # `build` runs every dev dependency (and the tests) with no id-token, and
 # packs the tarball; `publish` only downloads that tarball and publishes it.
 # A compromised dev dependency can break a build, not ship a release.
@@ -37,10 +37,13 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - run: npm ci
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
       # Publishing an untested build is how a library loses trust once.
-      - run: npm run typecheck
-      - run: npm test
+      - run: bun run typecheck
+      - run: bun run test
       - name: Refuse to publish a tag that disagrees with package.json
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -50,7 +53,7 @@ jobs:
             exit 1
           fi
       # npm pack doesn't run prepublishOnly, so build first.
-      - run: npm run build
+      - run: bun run build
       - run: npm pack
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -77,5 +80,5 @@ jobs:
         with:
           name: package
       # No NODE_AUTH_TOKEN: the OIDC token is exchanged automatically. No
-      # npm ci and no repo code: nothing runs here but npm itself.
+      # install and no repo code: nothing runs here but npm itself.
       - run: npm publish ./*.tgz --access public

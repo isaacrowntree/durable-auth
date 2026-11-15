@@ -5,9 +5,9 @@
 Three suites. The first is the one you run constantly.
 
 ```bash
-npm test                  # unit — the store on node:sqlite, and every route
-npm run test:integration  # the Durable Object on workerd's own SQLite
-npm run test:e2e          # the example app in Chromium with real WebAuthn
+bun run test                  # unit — the store on node:sqlite, and every route
+bun run test:integration  # the Durable Object on workerd's own SQLite
+bun run test:e2e          # the example app in Chromium with real WebAuthn
 ```
 
 **Unit** (`src/**/*.test.ts`) is instant. The store runs on Node's built-in
@@ -37,8 +37,8 @@ history that breaks it.
 Two more checks keep the unit suite honest:
 
 ```bash
-npm run test:coverage   # CI runs this: every branch of auth.ts, floors elsewhere
-npm run test:mutation   # Stryker: does the suite notice when a check is broken?
+bun run test:coverage   # CI runs this: every branch of auth.ts, floors elsewhere
+bun run test:mutation   # Stryker: does the suite notice when a check is broken?
 ```
 
 Mutation testing takes minutes, so CI runs it weekly
@@ -51,7 +51,7 @@ in production: a change to a route wants a journey, not just a unit test.
 ### Local setup gotcha
 
 The pool pulls in `sharp` (via `wrangler`), whose prebuilt binaries may lag the
-newest Node. If a first `npm install` fails building it, `npm install
+newest Node. If a first `bun install` fails building it, `bun install
 --ignore-scripts` skips it.
 
 ## Schema changes

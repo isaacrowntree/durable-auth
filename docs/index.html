@@ -358,7 +358,7 @@
                 <code>basePath</code> (default <code>"/auth"</code>) and
                 <code>timeoutMs</code> (default 15 s). There's a
                 <a href="https://github.com/isaacrowntree/durable-auth/tree/main/examples/basic">runnable example</a>:
-                a 50-line Worker and a one-page script, via <code>npm run example</code>.
+                a 50-line Worker and a one-page script, via <code>bun run example</code>.
               </p>
             </div>
           </div>
@@ -603,17 +603,17 @@
               <tbody>
                 <tr>
                   <th scope="row">Unit</th>
-                  <td><code>npm test</code></td>
+                  <td><code>bun run test</code></td>
                   <td>The store on Node's <code>node:sqlite</code>, and every route against it, with the passkey cryptography stubbed.</td>
                 </tr>
                 <tr>
                   <th scope="row">Integration</th>
-                  <td><code>npm run test:integration</code></td>
+                  <td><code>bun run test:integration</code></td>
                   <td>The real Durable Object on workerd's own SQLite, via <code>@cloudflare/vitest-plugin</code>: BLOBs, NULL bindings, the schema ALTERs, RPC.</td>
                 </tr>
                 <tr>
                   <th scope="row">End-to-end</th>
-                  <td><code>npm run test:e2e</code></td>
+                  <td><code>bun run test:e2e</code></td>
                   <td>The example app in Chromium with Chrome's virtual authenticator, one per device, so the WebAuthn is real. The journeys are below.</td>
                 </tr>
               </tbody>

@@ -82,9 +82,9 @@ Step-up: a session whose `verifiedAt` is older than `reauthWindowMs` gets `403 {
 
 ## Tests
 
-- Unit (`npm test`): the store on Node's node:sqlite, and every route against it, with the passkey cryptography stubbed.
-- Integration (`npm run test:integration`): the real Durable Object on workerd's own SQLite via @cloudflare/vitest-plugin — BLOBs, NULL bindings, the schema ALTERs, RPC.
-- End-to-end (`npm run test:e2e`): the example app in Chromium with Chrome's virtual authenticator, so the WebAuthn is real — sign up, recover a lost device and check it's locked out, step-up before delete, and more.
+- Unit (`bun run test`): the store on Node's node:sqlite, and every route against it, with the passkey cryptography stubbed.
+- Integration (`bun run test:integration`): the real Durable Object on workerd's own SQLite via @cloudflare/vitest-plugin — BLOBs, NULL bindings, the schema ALTERs, RPC.
+- End-to-end (`bun run test:e2e`): the example app in Chromium with Chrome's virtual authenticator, so the WebAuthn is real — sign up, recover a lost device and check it's locked out, step-up before delete, and more.
 
 ## Links
 

@@ -13,7 +13,7 @@ export default defineConfig({
   use: { baseURL: `http://localhost:${PORT}`, ...devices["Desktop Chrome"] },
   webServer: {
     // A fresh database each run; a short step-up window so a test can outlast it.
-    command: `rm -rf .wrangler/e2e-state examples/basic/.wrangler/tmp/email && npx wrangler dev --config examples/basic/wrangler.jsonc --port ${PORT} --persist-to .wrangler/e2e-state --var REAUTH_WINDOW_MS:3000`,
+    command: `rm -rf .wrangler/e2e-state examples/basic/.wrangler/tmp/email && bunx wrangler dev --config examples/basic/wrangler.jsonc --port ${PORT} --persist-to .wrangler/e2e-state --var REAUTH_WINDOW_MS:3000`,
     url: `http://localhost:${PORT}/auth/config`,
     reuseExistingServer: false,
     timeout: 120_000,

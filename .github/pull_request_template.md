@@ -8,9 +8,9 @@
 
 ## Verification
 
-- [ ] `npm run typecheck` and `npm test`
-- [ ] `npm run test:integration` (the Durable Object on workerd)
-- [ ] `npm run test:e2e` (real WebAuthn in Chromium) — for any change to a route or the client
+- [ ] `bun run typecheck` and `bun run test`
+- [ ] `bun run test:integration` (the Durable Object on workerd)
+- [ ] `bun run test:e2e` (real WebAuthn in Chromium) — for any change to a route or the client
 - [ ] A schema change appends to `MIGRATIONS` and adds an upgrade test in both suites
 
 ## Notes for reviewers
